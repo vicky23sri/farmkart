@@ -8,9 +8,8 @@
 
 import { Redirect, Stack } from 'expo-router';
 import React from 'react';
-import { ActivityIndicator, Alert, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 
-import { AppHeader } from '@/components/AppHeader';
 import { useAuthStore } from '@/store';
 import { colors } from '@/theme';
 
@@ -40,29 +39,19 @@ export default function SellerLayout() {
   }
 
   return (
-    <View style={styles.container}>
-      {/* Universal Seller Header with Dark Green Theme and Seller Pill */}
-      <AppHeader
-        isSeller
-        onSearchPress={() => Alert.alert('Search', 'Search listings & inventory')}
-        onNotificationPress={() => Alert.alert('Orders', '2 new buyer orders pending')}
-        showCart={false}
-      />
-
-      <Stack
-        screenOptions={{
+    <Stack
+      screenOptions={{
+        headerShown: false,
+      }}>
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen
+        name="add-product"
+        options={{
           headerShown: false,
-        }}>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen
-          name="add-product"
-          options={{
-            headerShown: false,
-            animation: 'slide_from_bottom',
-          }}
-        />
-      </Stack>
-    </View>
+          animation: 'slide_from_bottom',
+        }}
+      />
+    </Stack>
   );
 }
 
