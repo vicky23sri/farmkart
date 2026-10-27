@@ -16,7 +16,7 @@ import { useAuthStore } from '@/store';
 
 // Default to LAN IP or localhost
 export const BASE_URL =
-  process.env.EXPO_PUBLIC_API_URL || 'http://172.16.16.45:8000';
+  process.env.EXPO_PUBLIC_API_URL || 'https://37cf-117-222-152-64.ngrok-free.app';
 
 export const apiClient = axios.create({
   baseURL: BASE_URL,

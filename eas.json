@@ -12,6 +12,9 @@
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://37cf-117-222-152-64.ngrok-free.app"
       }
     },
     "production": {}
