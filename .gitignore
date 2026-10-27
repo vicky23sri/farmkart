@@ -30,8 +30,15 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# local env files & python virtual environments
+.env
 .env*.local
+venv/
+.venv/
+farmkart-api/venv/
+farmkart-api/.venv/
+farmkart-api/.env
+farmkart-api/uploads/
 
 # typescript
 *.tsbuildinfo
@@ -41,3 +48,7 @@ example
 # generated native folders
 /ios
 /android
+
+# builds and binaries
+*.apk
+*.aab

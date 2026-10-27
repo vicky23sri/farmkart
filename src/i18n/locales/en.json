@@ -1,0 +1,28 @@
+{
+  "app": {
+    "name": "FarmKart",
+    "tagline": "Direct from Farmers to You"
+  },
+  "common": {
+    "welcome": "Welcome to FarmKart",
+    "farmer": "Farmer (Seller)",
+    "buyer": "Buyer",
+    "selectLanguage": "Select Language",
+    "english": "English",
+    "tamil": "தமிழ் (Tamil)",
+    "searchPlaceholder": "Search fresh vegetables, fruits, grains...",
+    "changeLanguage": "Change Language"
+  },
+  "roles": {
+    "farmerTitle": "Sell Your Harvest",
+    "farmerDesc": "List crops, connect with bulk buyers, and get guaranteed fair prices without middlemen.",
+    "buyerTitle": "Buy Fresh Produce",
+    "buyerDesc": "Order 100% organic, freshly harvested produce directly from local farms at wholesale rates."
+  },
+  "quickActions": {
+    "mandiRates": "Live Mandi Rates",
+    "cropAdvisory": "Crop Advisory",
+    "weather": "Weather Forecast",
+    "myOrders": "My Orders"
+  }
+}

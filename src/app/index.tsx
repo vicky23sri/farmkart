@@ -1,98 +1,93 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+/**
+ * Splash & Gateway Screen
+ * Root route that decides initial navigation based on authentication status and user role.
+ * - Logged in with Buyer role -> /(buyer)
+ * - Logged in with Seller role -> /(seller)
+ * - Logged in without role -> /(auth)/role-select
+ * - Not logged in -> /(auth)/onboarding
+ */
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { Redirect } from 'expo-router';
+import React from 'react';
+import {
+  ActivityIndicator,
+  Image,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
+import { useAuthStore } from '@/store';
+import { colors, fontSizes, spacing } from '@/theme';
+
+export default function IndexScreen() {
+  const { isLoggedIn, role, isLoading } = useAuthStore();
+
+  // 1. While reading credentials from secure storage, display brand splash screen
+  if (isLoading) {
     return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
+      <View style={styles.splashContainer}>
+        <Image
+          source={require('@/assets/logo.png')}
+          style={styles.logo}
+          resizeMode="contain"
+        />
+        <Text style={styles.appName}>FarmKart</Text>
+        <Text style={styles.tagline}>உழவன் சந்தை</Text>
+        <ActivityIndicator
+          size="large"
+          color={colors.primary}
+          style={styles.loader}
+        />
+      </View>
     );
   }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
-  return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
 
-export default function HomeScreen() {
-  return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
+  // 2. If logged in with a role, navigate directly to that role's tabs
+  if (isLoggedIn && role === 'buyer') {
+    return <Redirect href="/(buyer)/(tabs)" />;
+  }
 
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
+  if (isLoggedIn && role === 'seller') {
+    return <Redirect href="/(seller)/(tabs)" />;
+  }
 
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
+  // 3. If logged in without a chosen role, prompt for role selection
+  if (isLoggedIn && !role) {
+    return <Redirect href="/(auth)/role-select" />;
+  }
 
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
-  );
+  // 4. Guest / unauthenticated users start at onboarding
+  return <Redirect href="/(auth)/onboarding" />;
 }
 
 const styles = StyleSheet.create({
-  container: {
+  splashContainer: {
     flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
-  },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
+    backgroundColor: colors.background,
     alignItems: 'center',
     justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
+    padding: spacing.lg,
   },
-  title: {
-    textAlign: 'center',
+  logo: {
+    width: 96,
+    height: 96,
+    borderRadius: 20,
+    marginBottom: spacing.md,
   },
-  code: {
-    textTransform: 'uppercase',
+  appName: {
+    fontSize: fontSizes.title,
+    fontWeight: '800',
+    color: colors.primaryDark,
+    letterSpacing: -0.5,
   },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
+  tagline: {
+    fontSize: fontSizes.sm,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    marginTop: spacing.xs,
+  },
+  loader: {
+    marginTop: spacing.xl,
   },
 });

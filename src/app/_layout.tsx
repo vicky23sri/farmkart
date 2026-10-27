@@ -1,18 +1,41 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
-import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
+/**
+ * Root Layout
+ * Configures global providers and hydrates persisted auth & language preferences on app launch.
+ */
 
-import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import React, { useEffect, useState } from 'react';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-SplashScreen.preventAutoHideAsync();
+// Initialize i18n
+import '@/i18n';
+import { useAuthStore, useLanguageStore } from '@/store';
 
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
+export default function RootLayout() {
+  // TanStack Query client instance
+  const [queryClient] = useState(() => new QueryClient());
+
+  // Restore user's saved preferences
+  const loadSavedLanguage = useLanguageStore((state) => state.loadSavedLanguage);
+  const loadSavedAuth = useAuthStore((state) => state.loadSavedAuth);
+
+  useEffect(() => {
+    loadSavedLanguage();
+    loadSavedAuth();
+  }, [loadSavedLanguage, loadSavedAuth]);
+
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <AppTabs />
-    </ThemeProvider>
+    <QueryClientProvider client={queryClient}>
+      <SafeAreaProvider>
+        <StatusBar style="dark" />
+        <Stack
+          screenOptions={{
+            headerShown: false,
+          }}
+        />
+      </SafeAreaProvider>
+    </QueryClientProvider>
   );
 }

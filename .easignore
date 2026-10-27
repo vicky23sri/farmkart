@@ -1,0 +1,7 @@
+# Ignore API backend from mobile build
+farmkart-api/
+.venv/
+node_modules/
+*.apk
+*.aab
+dist/

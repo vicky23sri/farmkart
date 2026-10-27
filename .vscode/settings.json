@@ -3,5 +3,11 @@
     "source.fixAll": "explicit",
     "source.organizeImports": "explicit",
     "source.sortMembers": "explicit"
-  }
+  },
+  "python.analysis.extraPaths": [
+    "./farmkart-api"
+  ],
+  "python.autoComplete.extraPaths": [
+    "./farmkart-api"
+  ]
 }
