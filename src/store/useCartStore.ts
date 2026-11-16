@@ -105,6 +105,101 @@ interface CartState {
   ) => (CartItem & { distanceKm: number })[];
 }
 
+const FREE_DELIVERY_RADIUS_KM = 50;
+
+/** Rough vehicle estimate for display only (never used for pricing). */
+function estimateVehicle(items: CartItem[], buyerLat: number, buyerLng: number): DeliveryBreakdown {
+  if (items.length === 0) {
+    return {
+      fee: 0,
+      vehicleTier: 'two_wheeler',
+      vehicleName: 'Free',
+      vehicleNameTamil: 'இலவசம்',
+      maxDistanceKm: 0,
+      isBulk: false,
+      description: 'No items in cart',
+    };
+  }
+
+  // Calculate max distance among all farmer sources
+  let maxDistance = 0;
+  let hasBulkItem = false;
+  let totalEstimatedWeightKg = 0;
+
+  for (const item of items) {
+    const dist = getDistanceKm(
+      buyerLat,
+      buyerLng,
+      item.product.lat,
+      item.product.lng
+    );
+    if (dist > maxDistance) {
+      maxDistance = dist;
+    }
+
+    // Check if item qualifies as bulk load
+    const unit = item.selectedUnit || item.product.unit;
+    if (
+      unit === 'tractor load' ||
+      unit === 'truck load' ||
+      unit === 'quintal' ||
+      item.product.category === 'manure' ||
+      item.product.category === 'fodder' ||
+      item.quantity >= 30
+    ) {
+      hasBulkItem = true;
+    }
+
+    // Rough weight estimation
+    if (unit === 'tractor load') totalEstimatedWeightKg += 2500;
+    else if (unit === 'quintal') totalEstimatedWeightKg += 100 * item.quantity;
+    else if (unit === 'bag') totalEstimatedWeightKg += 40 * item.quantity;
+    else totalEstimatedWeightKg += item.quantity;
+  }
+
+  // Determine vehicle tier & fee
+  if (hasBulkItem || totalEstimatedWeightKg >= 150) {
+    // Tractor / Heavy Agro Vehicle
+    const baseFee = 150;
+    const distanceAddon = Math.round(maxDistance * 2.5);
+    const fee = baseFee + distanceAddon;
+    return {
+      fee,
+      vehicleTier: 'tractor',
+      vehicleName: 'Tractor Tipper / Heavy Load',
+      vehicleNameTamil: 'டிராக்டர் / கனரக லோடு',
+      maxDistanceKm: maxDistance,
+      isBulk: true,
+      description: `Tractor transport for ${totalEstimatedWeightKg >= 1000 ? 'bulk harvest/manure' : 'heavy load'} (${maxDistance.toFixed(1)} km)`,
+    };
+  } else if (maxDistance > 10 || totalEstimatedWeightKg >= 25) {
+    // Mini Truck / Auto
+    const baseFee = 60;
+    const distanceAddon = maxDistance > 10 ? Math.round((maxDistance - 10) * 2) : 0;
+    const fee = baseFee + distanceAddon;
+    return {
+      fee,
+      vehicleTier: 'mini_truck',
+      vehicleName: 'Mini Truck / Auto Cargo',
+      vehicleNameTamil: 'மினி லாரி / ஆட்டோ கார்கோ',
+      maxDistanceKm: maxDistance,
+      isBulk: false,
+      description: `Farm-to-door delivery for ${maxDistance.toFixed(1)} km`,
+    };
+  } else {
+    // Bike Courier (under 10 km, light harvest)
+    return {
+      fee: 30,
+      vehicleTier: 'two_wheeler',
+      vehicleName: 'Two-Wheeler Direct Express',
+      vehicleNameTamil: 'இருசக்கர விரைவு விநியோகம்',
+      maxDistanceKm: maxDistance,
+      isBulk: false,
+      description: `Local doorstep express delivery under 10 km (${maxDistance.toFixed(1)} km)`,
+    };
+  }
+}
+
 export const useCartStore = create<CartState>()(
   persist(
     (set, get) => ({
@@ -121,9 +216,11 @@ export const useCartStore = create<CartState>()(
         );
 
         if (existingIndex > -1) {
-          const updated = [...currentItems];
-          updated[existingIndex].quantity += quantity;
-          set({ items: updated });
+          set({
+            items: currentItems.map((item, idx) =>
+              idx === existingIndex ? { ...item, quantity: item.quantity + quantity } : item
+            ),
+          });
         } else {
           set({
             items: [
@@ -164,40 +261,12 @@ export const useCartStore = create<CartState>()(
           couponError: null,
         }),
 
-      applyCoupon: (rawCode: string) => {
-        const code = rawCode.trim().toUpperCase();
-        const subtotal = get().getSubtotal();
-
-        const coupon = AVAILABLE_COUPONS.find((c) => c.code === code);
-        if (!coupon) {
-          set({ couponError: 'Invalid coupon code. Try FARM50 or UZHAVAN10' });
-          return { success: false, message: 'Invalid coupon code' };
-        }
-
-        if (subtotal < coupon.minOrder) {
-          const msg = `Minimum order amount of ₹${coupon.minOrder} required for ${code}`;
-          set({ couponError: msg });
-          return { success: false, message: msg };
-        }
-
-        let discount = 0;
-        if (coupon.discountType === 'fixed') {
-          discount = Math.min(coupon.value, subtotal);
-        } else if (coupon.discountType === 'percent') {
-          discount = Math.round((subtotal * coupon.value) / 100);
-          if (discount > 150) discount = 150; // Cap at 150
-        }
-
-        set({
-          couponCode: code,
-          couponDiscount: discount,
-          couponError: null,
-        });
-
-        return {
-          success: true,
-          message: `Coupon ${code} applied successfully! Saved ₹${discount}`,
-        };
+      applyCoupon: () => {
+        // Coupons are not supported by the order API yet; never show a discount the
+        // server will not honour.
+        const message = 'Coupons are not available yet.';
+        set({ couponCode: null, couponDiscount: 0, couponError: message });
+        return { success: false, message };
       },
 
       removeCoupon: () =>
@@ -230,96 +299,17 @@ export const useCartStore = create<CartState>()(
        * - Tractor for bulk items (manure tractor load, paddy quintals, fodder bales, 25-50 km: ₹150 base)
        */
       getDeliveryBreakdown: (buyerLat: number, buyerLng: number): DeliveryBreakdown => {
-        const items = get().items;
-        if (items.length === 0) {
-          return {
-            fee: 0,
-            vehicleTier: 'two_wheeler',
-            vehicleName: 'Free',
-            vehicleNameTamil: 'இலவசம்',
-            maxDistanceKm: 0,
-            isBulk: false,
-            description: 'No items in cart',
-          };
-        }
-
-        // Calculate max distance among all farmer sources
-        let maxDistance = 0;
-        let hasBulkItem = false;
-        let totalEstimatedWeightKg = 0;
-
-        for (const item of items) {
-          const dist = getDistanceKm(
-            buyerLat,
-            buyerLng,
-            item.product.lat,
-            item.product.lng
-          );
-          if (dist > maxDistance) {
-            maxDistance = dist;
-          }
-
-          // Check if item qualifies as bulk load
-          const unit = item.selectedUnit || item.product.unit;
-          if (
-            unit === 'tractor load' ||
-            unit === 'truck load' ||
-            unit === 'quintal' ||
-            item.product.category === 'manure' ||
-            item.product.category === 'fodder' ||
-            item.quantity >= 30
-          ) {
-            hasBulkItem = true;
-          }
-
-          // Rough weight estimation
-          if (unit === 'tractor load') totalEstimatedWeightKg += 2500;
-          else if (unit === 'quintal') totalEstimatedWeightKg += 100 * item.quantity;
-          else if (unit === 'bag') totalEstimatedWeightKg += 40 * item.quantity;
-          else totalEstimatedWeightKg += item.quantity;
-        }
-
-        // Determine vehicle tier & fee
-        if (hasBulkItem || totalEstimatedWeightKg >= 150) {
-          // Tractor / Heavy Agro Vehicle
-          const baseFee = 150;
-          const distanceAddon = Math.round(maxDistance * 2.5);
-          const fee = baseFee + distanceAddon;
-          return {
-            fee,
-            vehicleTier: 'tractor',
-            vehicleName: 'Tractor Tipper / Heavy Load',
-            vehicleNameTamil: 'டிராக்டர் / கனரக லோடு',
-            maxDistanceKm: maxDistance,
-            isBulk: true,
-            description: `Tractor transport for ${totalEstimatedWeightKg >= 1000 ? 'bulk harvest/manure' : 'heavy load'} (${maxDistance.toFixed(1)} km)`,
-          };
-        } else if (maxDistance > 10 || totalEstimatedWeightKg >= 25) {
-          // Mini Truck / Auto
-          const baseFee = 60;
-          const distanceAddon = maxDistance > 10 ? Math.round((maxDistance - 10) * 2) : 0;
-          const fee = baseFee + distanceAddon;
-          return {
-            fee,
-            vehicleTier: 'mini_truck',
-            vehicleName: 'Mini Truck / Auto Cargo',
-            vehicleNameTamil: 'மினி லாரி / ஆட்டோ கார்கோ',
-            maxDistanceKm: maxDistance,
-            isBulk: false,
-            description: `Farm-to-door delivery for ${maxDistance.toFixed(1)} km`,
-          };
-        } else {
-          // Bike Courier (under 10 km, light harvest)
-          return {
-            fee: 30,
-            vehicleTier: 'two_wheeler',
-            vehicleName: 'Two-Wheeler Direct Express',
-            vehicleNameTamil: 'இருசக்கர விரைவு விநியோகம்',
-            maxDistanceKm: maxDistance,
-            isBulk: false,
-            description: `Local doorstep express delivery under 10 km (${maxDistance.toFixed(1)} km)`,
-          };
-        }
+        // The server charges no delivery fee inside the free radius; beyond it the farmer
+        // quotes a transport fee that the buyer must accept. Mirror that exactly here.
+        const estimate = estimateVehicle(get().items, buyerLat, buyerLng);
+        const beyondFreeRadius = estimate.maxDistanceKm > FREE_DELIVERY_RADIUS_KM;
+        return {
+          ...estimate,
+          fee: 0,
+          description: beyondFreeRadius
+            ? `Beyond ${FREE_DELIVERY_RADIUS_KM} km: the farmer will quote any transport fee for you to accept.`
+            : `Free delivery within ${FREE_DELIVERY_RADIUS_KM} km (${estimate.vehicleName}).`,
+        };
       },
 
       getGrandTotal: (buyerLat: number, buyerLng: number) => {

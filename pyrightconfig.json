@@ -1,5 +1,8 @@
 {
+  "venvPath": "farmkart-api",
+  "venv": ".venv",
   "extraPaths": [
-    "farmkart-api"
+    "farmkart-api",
+    "farmkart-api/.venv/lib/python3.12/site-packages"
   ]
 }

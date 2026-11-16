@@ -6,21 +6,20 @@
  * - DeliveryBanner indicating feasibility (Green <= 50 km, Red > 50 km)
  * - Quantity modification & item removal
  * - Load-based delivery fee (Bike under 10 km, Mini Truck, Tractor for bulk)
- * - Coupon field with instant application & discount display
  * - Strict 50 km checkout blocker with informative alert banner
  */
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import React, { useState } from 'react';
+import React from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 
@@ -49,18 +48,13 @@ export default function BuyerCartScreen() {
     removeItem,
     clearCart,
     getSubtotal,
-    couponCode,
     couponDiscount,
-    couponError,
-    applyCoupon,
-    removeCoupon,
     getDeliveryBreakdown,
     getItemsWithDistance,
     hasOutOfRangeItems,
     getOutOfRangeItems,
   } = useCartStore();
 
-  const [inputCoupon, setInputCoupon] = useState('');
 
   const itemsWithDistance = getItemsWithDistance(
     currentLocation.lat,
@@ -85,15 +79,19 @@ export default function BuyerCartScreen() {
   const deliveryFee = deliveryBreakdown.fee;
   const grandTotal = Math.max(0, subtotal - couponDiscount + deliveryFee);
 
-  const handleApplyCoupon = () => {
-    if (!inputCoupon.trim()) return;
-    const res = applyCoupon(inputCoupon);
-    if (res.success) {
-      setInputCoupon('');
-    }
-  };
+  const sellerIds = new Set(items.map((i) => i.product.sellerId));
 
   const handleProceedToCheckout = () => {
+    // The order API accepts items from one farm per order
+    if (sellerIds.size > 1) {
+      Alert.alert(
+        language === 'ta' ? 'ஒரு பண்ணை மட்டும்' : 'One farm per order',
+        language === 'ta'
+          ? 'ஒரு ஆர்டரில் ஒரே விவசாயியின் பொருட்கள் மட்டுமே இருக்க வேண்டும். மற்ற பொருட்களை நீக்கி தனியாக ஆர்டர் செய்யவும்.'
+          : 'Each order can contain products from a single farmer. Please remove items from other farms and order them separately.'
+      );
+      return;
+    }
     // Both standard (<=50km) and extended (>50km) delivery can proceed to checkout
     router.push('/(buyer)/checkout');
   };
@@ -372,56 +370,6 @@ export default function BuyerCartScreen() {
               </View>
             </Card>
 
-            {/* Coupon Code Section */}
-            <Card style={styles.couponCard}>
-              <Text style={styles.couponHeading}>
-                {language === 'ta' ? 'தள்ளுபடி கூப்பன்' : 'Apply Coupon'}
-              </Text>
-
-              {couponCode ? (
-                <View style={styles.appliedCouponRow}>
-                  <View style={styles.appliedCouponLeft}>
-                    <MaterialCommunityIcons
-                      name="ticket-percent"
-                      size={20}
-                      color={colors.primary}
-                    />
-                    <View>
-                      <Text style={styles.appliedCouponCode}>
-                        {couponCode} APPLIED
-                      </Text>
-                      <Text style={styles.appliedCouponSavings}>
-                        Saved ₹{couponDiscount} on this harvest order!
-                      </Text>
-                    </View>
-                  </View>
-                  <Pressable onPress={removeCoupon} hitSlop={8}>
-                    <Text style={styles.removeCouponText}>Remove</Text>
-                  </Pressable>
-                </View>
-              ) : (
-                <View style={styles.couponInputRow}>
-                  <TextInput
-                    style={styles.couponInput}
-                    placeholder="Enter FARM50 or UZHAVAN10"
-                    placeholderTextColor={colors.textMuted}
-                    value={inputCoupon}
-                    onChangeText={setInputCoupon}
-                    autoCapitalize="characters"
-                  />
-                  <Pressable
-                    onPress={handleApplyCoupon}
-                    style={styles.applyCouponBtn}>
-                    <Text style={styles.applyCouponBtnText}>Apply</Text>
-                  </Pressable>
-                </View>
-              )}
-
-              {couponError && (
-                <Text style={styles.couponErrorText}>{couponError}</Text>
-              )}
-            </Card>
-
             {/* Bill Details */}
             <Card style={styles.billCard}>
               <Text style={styles.billTitle}>
@@ -438,7 +386,7 @@ export default function BuyerCartScreen() {
               {couponDiscount > 0 && (
                 <View style={styles.billRow}>
                   <Text style={[styles.billLabel, { color: colors.primary }]}>
-                    Coupon Discount ({couponCode})
+                    Discount
                   </Text>
                   <Text style={[styles.billValue, { color: colors.primary }]}>
                     - ₹{couponDiscount}
@@ -455,7 +403,7 @@ export default function BuyerCartScreen() {
                     {deliveryBreakdown.vehicleName}
                   </Text>
                 </View>
-                <Text style={styles.billValue}>₹{deliveryFee}</Text>
+                <Text style={styles.billValue}>{deliveryFee > 0 ? `₹${deliveryFee}` : 'Free'}</Text>
               </View>
 
               <View style={[styles.billRow, styles.grandTotalRow]}>

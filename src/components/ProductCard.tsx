@@ -103,15 +103,17 @@ export function ProductCard({
           </View>
         )}
 
-        {/* Distance Badge on Image */}
-        <View style={styles.distanceBadge}>
-          <MaterialCommunityIcons
-            name="map-marker-distance"
-            size={12}
-            color={colors.white}
-          />
-          <Text style={styles.distanceText}>{distanceKm.toFixed(1)} km</Text>
-        </View>
+        {/* Distance Badge on Image (only when the farm location is known) */}
+        {Number.isFinite(distanceKm) ? (
+          <View style={styles.distanceBadge}>
+            <MaterialCommunityIcons
+              name="map-marker-distance"
+              size={12}
+              color={colors.white}
+            />
+            <Text style={styles.distanceText}>{distanceKm.toFixed(1)} km</Text>
+          </View>
+        ) : null}
       </View>
 
       {/* Details Section */}

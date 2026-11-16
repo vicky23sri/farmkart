@@ -31,19 +31,24 @@ def get_payout_summary(
     online_earnings = 0.0
     delivered_orders = []
 
+    closed_statuses = {"cancelled", "rejected"}
     for o in orders:
+        if o.status in closed_statuses:
+            continue
         if o.payment_method == "cod":
             if o.payment_status == "collected":
                 cod_collected += o.total
             else:
                 cod_pending += o.total
-        elif o.payment_method == "online":
-            if o.payment_status in ["paid", "collected"]:
+        elif o.payment_method in ("upi", "online"):
+            if o.payment_status in ("paid", "collected"):
                 online_earnings += o.total
 
         if o.status == "delivered":
             total_earnings += o.total
-            delivered_orders.append(OrderOut.model_validate(o))
+            item = OrderOut.model_validate(o)
+            item.delivery_otp = None
+            delivered_orders.append(item)
 
     return PayoutSummaryOut(
         seller_id=current_seller.id,

@@ -9,17 +9,19 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import React, { useState } from 'react';
 import {
+  Alert,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppHeader } from '@/components/AppHeader';
 import { Card } from '@/components/Card';
 import { PrimaryButton } from '@/components/PrimaryButton';
+import { authService } from '@/services/authService';
 import { useAuthStore, useLanguageStore, UserRole } from '@/store';
 import { colors, fontSizes, spacing } from '@/theme';
 import { storage } from '@/utils/storage';
@@ -41,7 +43,8 @@ export default function RoleSelectScreen() {
     setSubmitting(true);
 
     try {
-      // 1. Save role in Auth Store (persisted in secure store)
+      // 1. Persist the role on the server (all buyer/seller APIs check it), then locally
+      await authService.setRole(selectedRole);
       await setRole(selectedRole);
 
       // 2. Save "Remember my choice" preference
@@ -55,14 +58,12 @@ export default function RoleSelectScreen() {
       } else {
         router.replace('/(buyer)/(tabs)');
       }
-    } catch {
+    } catch (err: any) {
       setSubmitting(false);
-      // Fallback navigation
-      if (selectedRole === 'seller') {
-        router.replace('/(seller)/(tabs)');
-      } else {
-        router.replace('/(buyer)/(tabs)');
-      }
+      Alert.alert(
+        language === 'ta' ? 'பிழை' : 'Could not save your choice',
+        err?.message || 'Please check your connection and try again.'
+      );
     }
   };
 

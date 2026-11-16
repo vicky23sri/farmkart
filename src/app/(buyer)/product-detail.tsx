@@ -36,10 +36,9 @@ import { RatingStars } from '@/components/RatingStars';
 import { StatusChip } from '@/components/StatusChip';
 import { Product, ProductUnit, Review, Seller } from '@/data/products';
 import { productService } from '@/services/productService';
-import { useCartStore, useLanguageStore, useWishlistStore } from '@/store';
+import { useCartStore, useLanguageStore, useLocationStore, useWishlistStore } from '@/store';
 import { colors, fontSizes, shadows, spacing } from '@/theme';
 import { getDistanceKm } from '@/utils/distance';
-import { BUYER_LOCATION } from './(tabs)/index';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -49,6 +48,7 @@ export default function BuyerProductDetailScreen() {
   const { addItem, getTotalCount } = useCartStore();
   const { toggleWishlist, isInWishlist } = useWishlistStore();
 
+  const { currentLocation } = useLocationStore();
   const [loading, setLoading] = useState(true);
   const [product, setProduct] = useState<Product | null>(null);
   const [seller, setSeller] = useState<Seller | null>(null);
@@ -73,10 +73,11 @@ export default function BuyerProductDetailScreen() {
         }
         if (!currentProd) {
           const all = await productService.getProducts();
-          currentProd = all[0];
+          currentProd = all.items[0];
         }
 
         setProduct(currentProd);
+        if (currentProd?.unit) setSelectedUnit(currentProd.unit);
         setSelectedUnit(currentProd.unit);
         setQuantity(currentProd.minOrder || 1);
 
@@ -100,48 +101,19 @@ export default function BuyerProductDetailScreen() {
 
   // Distance from Buyer to Farmer
   const distanceKm = useMemo(() => {
-    if (!product) return 0;
-    return getDistanceKm(BUYER_LOCATION.lat, BUYER_LOCATION.lng, product.lat, product.lng);
-  }, [product]);
+    if (!product) return Number.NaN;
+    return getDistanceKm(currentLocation.lat, currentLocation.lng, product.lat, product.lng);
+  }, [product, currentLocation.lat, currentLocation.lng]);
 
   // Crucial Rule: Deliverable only if within 50 km
-  const isWithinDeliveryRadius = distanceKm <= 50;
+  const isWithinDeliveryRadius = !Number.isFinite(distanceKm) || distanceKm <= 50;
 
   // Available units based on category
+  // Products are sold only in the unit the farmer listed: the order API prices by that unit,
+  // so offering converted units here would show prices the server would not charge.
   const availableUnits: { unit: ProductUnit | string; labelEn: string; labelTa: string; multiplier: number }[] = useMemo(() => {
     if (!product) return [];
-    const base = product.unit;
-
-    if (base === 'quintal') {
-      return [
-        { unit: 'quintal', labelEn: 'Quintal (100 kg)', labelTa: 'குவின்டால் (100 கிலோ)', multiplier: 1 },
-        { unit: 'bag', labelEn: 'Bag (50 kg)', labelTa: 'மூட்டை (50 கிலோ)', multiplier: 0.52 },
-        { unit: 'ton', labelEn: 'Ton (1,000 kg)', labelTa: 'டன் (1,000 கிலோ)', multiplier: 9.8 },
-      ];
-    }
-    if (base === 'tractor load') {
-      return [
-        { unit: 'tractor load', labelEn: 'Tractor Tipper Load (3 Ton)', labelTa: 'டிராக்டர் லோடு (3 டன்)', multiplier: 1 },
-        { unit: 'bag', labelEn: 'Jumbo Bag (500 kg)', labelTa: 'ஜம்போ பை (500 கிலோ)', multiplier: 0.2 },
-      ];
-    }
-    if (base === 'bundle') {
-      return [
-        { unit: 'bundle', labelEn: 'Standard Bundle', labelTa: 'நிலையான கட்டு', multiplier: 1 },
-        { unit: 'truck load', labelEn: 'Mini Truck Load (50 Bundles)', labelTa: 'மினி லாரி லோடு (50 கட்டு)', multiplier: 48 },
-      ];
-    }
-    if (base === 'bag') {
-      return [
-        { unit: 'bag', labelEn: 'Bag (40 kg)', labelTa: 'மூட்டை (40 கிலோ)', multiplier: 1 },
-        { unit: 'kg', labelEn: 'Per kg loose', labelTa: 'ஒரு கிலோ உதிரி', multiplier: 0.03 },
-      ];
-    }
-    // Default kg
-    return [
-      { unit: 'kg', labelEn: 'Kilogram (kg)', labelTa: 'கிலோ (kg)', multiplier: 1 },
-      { unit: 'bag', labelEn: 'Bulk Bag (25 kg)', labelTa: 'மொத்த பை (25 கிலோ)', multiplier: 24 },
-    ];
+    return [{ unit: product.unit, labelEn: product.unit, labelTa: product.unit, multiplier: 1 }];
   }, [product]);
 
   const currentUnitConfig = availableUnits.find((u) => u.unit === selectedUnit) || {
@@ -271,7 +243,7 @@ export default function BuyerProductDetailScreen() {
                   color={colors.white}
                 />
                 <Text style={styles.distanceBadgeText}>
-                  {distanceKm.toFixed(1)} km
+                  {Number.isFinite(distanceKm) ? `${distanceKm.toFixed(1)} km` : '—'}
                 </Text>
               </View>
             </View>
@@ -455,7 +427,7 @@ export default function BuyerProductDetailScreen() {
           <DeliveryBanner
             distanceKm={distanceKm}
             maxDeliverableKm={50}
-            locationName={BUYER_LOCATION.city}
+            locationName={currentLocation.name}
             deliveryTime="Today before 6:30 PM"
           />
         </View>
@@ -498,8 +470,8 @@ export default function BuyerProductDetailScreen() {
                   size={12}
                   color={colors.textSecondary}
                 />{' '}
-                {seller?.village || product.village},{' '}
-                {seller?.district || 'Tamil Nadu'} • ({distanceKm.toFixed(1)} km away)
+                {[seller?.village || product.village, seller?.district].filter(Boolean).join(', ') || 'Tamil Nadu'}
+                {Number.isFinite(distanceKm) ? ` • (${distanceKm.toFixed(1)} km away)` : ''}
               </Text>
             </View>
           </View>

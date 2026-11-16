@@ -1,19 +1,19 @@
 /**
  * Buyer Notifications Screen
- * Features:
- * - AppHeader on top with Back button, cart count badge, and title
- * - Filter tabs: All, Orders, Harvests & Offers
- * - Actions: "Mark All as Read", "Clear All"
- * - Clickable notification cards with status badges and unread indicator
- * - Direct navigation to Order Tracking, Product Details, or Marketplace
+ * Real-time push notifications & backend alerts:
+ * - Order status progress (placed, confirmed, packed, shipped, out for delivery, delivered)
+ * - Harvest drops & Mandi offers
+ * - Pull to refresh & mark all as read
  */
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -38,6 +38,8 @@ export default function NotificationsScreen() {
   const { getTotalCount } = useCartStore();
   const {
     notifications,
+    isLoading,
+    fetchNotifications,
     markAsRead,
     markAllAsRead,
     clearAll,
@@ -45,6 +47,17 @@ export default function NotificationsScreen() {
   } = useNotificationStore();
 
   const [filter, setFilter] = useState<NotificationFilter>('all');
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    fetchNotifications();
+  }, [fetchNotifications]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await fetchNotifications();
+    setRefreshing(false);
+  };
 
   const unreadCount = getUnreadCount();
 
@@ -66,14 +79,16 @@ export default function NotificationsScreen() {
         {
           text: language === 'ta' ? 'அழி' : 'Clear',
           style: 'destructive',
-          onPress: () => clearAll(),
+          onPress: () => {
+            clearAll();
+          },
         },
       ]
     );
   };
 
-  const handleNotificationPress = (item: FarmNotification) => {
-    markAsRead(item.id);
+  const handleNotificationPress = async (item: FarmNotification) => {
+    await markAsRead(item.id);
 
     if (item.type === 'order') {
       if (item.orderId) {
@@ -167,13 +182,19 @@ export default function NotificationsScreen() {
         {notifications.length > 0 && (
           <View style={styles.actionButtonsCol}>
             {unreadCount > 0 && (
-              <Pressable onPress={markAllAsRead} hitSlop={6} style={styles.textActionBtn}>
+              <Pressable
+                onPress={() => markAllAsRead()}
+                hitSlop={6}
+                style={styles.textActionBtn}>
                 <Text style={styles.markReadText}>
                   {language === 'ta' ? 'படித்ததாக குறி' : 'Mark all read'}
                 </Text>
               </Pressable>
             )}
-            <Pressable onPress={handleClearAll} hitSlop={6} style={styles.textActionBtn}>
+            <Pressable
+              onPress={handleClearAll}
+              hitSlop={6}
+              style={styles.textActionBtn}>
               <Text style={styles.clearAllText}>
                 {language === 'ta' ? 'அழி' : 'Clear'}
               </Text>
@@ -183,7 +204,11 @@ export default function NotificationsScreen() {
       </View>
 
       {/* Notifications List */}
-      {filteredList.length === 0 ? (
+      {isLoading && notifications.length === 0 ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={colors.primaryDark} />
+        </View>
+      ) : filteredList.length === 0 ? (
         <EmptyState
           icon="bell-sleep-outline"
           title={
@@ -204,7 +229,15 @@ export default function NotificationsScreen() {
       ) : (
         <ScrollView
           contentContainerStyle={styles.container}
-          showsVerticalScrollIndicator={false}>
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={[colors.primaryDark]}
+              tintColor={colors.primaryDark}
+            />
+          }>
           {filteredList.map((item) => {
             const iconConfig = getTypeIcon(item.type);
 
@@ -241,13 +274,17 @@ export default function NotificationsScreen() {
                             !item.read && styles.notifTitleBold,
                           ]}
                           numberOfLines={1}>
-                          {language === 'ta' ? item.titleTamil : item.title}
+                          {language === 'ta' && item.titleTamil
+                            ? item.titleTamil
+                            : item.title}
                         </Text>
                         <Text style={styles.timeAgoText}>{item.timeAgo}</Text>
                       </View>
 
                       <Text style={styles.messageText} numberOfLines={2}>
-                        {language === 'ta' ? item.messageTamil : item.message}
+                        {language === 'ta' && item.messageTamil
+                          ? item.messageTamil
+                          : item.message}
                       </Text>
 
                       {/* Bottom action hint */}
@@ -279,6 +316,11 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: colors.background,
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   controlsRow: {
     backgroundColor: colors.surface,

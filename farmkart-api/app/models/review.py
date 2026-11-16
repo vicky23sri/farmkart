@@ -23,7 +23,7 @@ class Review(Base):
     tags = Column(JSON, default=list, nullable=False)    # ["Fresh", "On time", etc.]
     seller_reply = Column(String(1000), nullable=True)
 
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
 
     # Relationships
     buyer = relationship("User", foreign_keys=[buyer_id])

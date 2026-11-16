@@ -26,19 +26,12 @@ import { CategoryChip } from '@/components/CategoryChip';
 import { ProductCard } from '@/components/ProductCard';
 import { Product } from '@/data/products';
 import { productService } from '@/services/productService';
-import { useCartStore, useLanguageStore } from '@/store';
+import { useCartStore, useLanguageStore, useLocationStore } from '@/store';
 import { colors, fontSizes, shadows, spacing } from '@/theme';
 import { getDistanceKm } from '@/utils/distance';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
-// Default Buyer Reference Location (Madurai, Tamil Nadu)
-export const BUYER_LOCATION = {
-  lat: 9.9252,
-  lng: 78.1198,
-  city: 'Madurai Central',
-  state: 'Tamil Nadu',
-};
 
 // Promotional Offer Banners for Carousel
 const OFFER_BANNERS = [
@@ -82,6 +75,7 @@ const OFFER_BANNERS = [
 
 export default function BuyerHomeScreen() {
   const { language } = useLanguageStore();
+  const { currentLocation } = useLocationStore();
   const { items, addItem, updateQuantity, getTotalCount } = useCartStore();
 
   const [loading, setLoading] = useState(true);
@@ -96,8 +90,8 @@ export default function BuyerHomeScreen() {
 
   const loadData = async () => {
     try {
-      const products = await productService.getProducts();
-      setAllProducts(products);
+      const res = await productService.getProducts();
+      setAllProducts(res.items);
     } catch (error) {
       console.error('Failed to load products:', error);
     } finally {
@@ -110,9 +104,9 @@ export default function BuyerHomeScreen() {
     let isMounted = true;
     (async () => {
       try {
-        const products = await productService.getProducts();
+        const res = await productService.getProducts();
         if (isMounted) {
-          setAllProducts(products);
+          setAllProducts(res.items);
         }
       } catch (error) {
         console.error('Failed to load products:', error);
@@ -154,9 +148,9 @@ export default function BuyerHomeScreen() {
   const productsWithDistance = useMemo(() => {
     return allProducts.map((p) => ({
       ...p,
-      distanceKm: getDistanceKm(BUYER_LOCATION.lat, BUYER_LOCATION.lng, p.lat, p.lng),
+      distanceKm: getDistanceKm(currentLocation.lat, currentLocation.lng, p.lat, p.lng),
     }));
-  }, [allProducts]);
+  }, [allProducts, currentLocation.lat, currentLocation.lng]);
 
   // Section 1: "Fresh near you" - deliverable items sorted by distance (< 50 km)
   const freshNearYou = useMemo(() => {
@@ -267,7 +261,7 @@ export default function BuyerHomeScreen() {
           </View>
           <View style={styles.locationTexts}>
             <View style={styles.locationHeadlineRow}>
-              <Text style={styles.locationCity}>{BUYER_LOCATION.city}</Text>
+              <Text style={styles.locationCity}>{currentLocation.name}</Text>
               <View style={styles.radiusPill}>
                 <Text style={styles.radiusPillText}>
                   {language === 'ta' ? '50 கி.மீ எல்லை' : 'Delivering within 50 km'}
@@ -288,8 +282,8 @@ export default function BuyerHomeScreen() {
             Alert.alert(
               language === 'ta' ? 'விநியோக இடம்' : 'Delivery Location',
               language === 'ta'
-                ? `தற்போதைய இடம்: ${BUYER_LOCATION.city}. அனைத்து தயாரிப்புகளும் 50 கி.மீ சுற்றளவுக்குள் கணக்கிடப்படுகின்றன.`
-                : `Current hub: ${BUYER_LOCATION.city}. Doorstep delivery is available for farms within 50 km.`
+                ? `தற்போதைய இடம்: ${currentLocation.name}. அனைத்து தயாரிப்புகளும் 50 கி.மீ சுற்றளவுக்குள் கணக்கிடப்படுகின்றன.`
+                : `Current hub: ${currentLocation.name}. Doorstep delivery is available for farms within 50 km.`
             )
           }
           style={styles.locationChangeBtn}>

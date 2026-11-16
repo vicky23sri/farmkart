@@ -1,218 +1,214 @@
 /**
- * Login Screen
- * Two-stage authentication:
- * 1. 10-digit Indian mobile number validation (+91, starting with 6-9)
- * 2. 6-box OTP verification with auto-focus and a 30-second resend countdown timer.
- * Integrates with authService and updates useAuthStore upon verification.
+ * Login & Register Screen
+ * Modern Authentication flow:
+ * - Email / Mobile & Password Login
+ * - New Account Registration with Role Selection (Buyer / Farmer)
+ * - Google Sign-In (token verified by the server)
  */
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
+import * as WebBrowser from 'expo-web-browser';
+import React, { useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppHeader } from '@/components/AppHeader';
 import { Card } from '@/components/Card';
 import { PrimaryButton } from '@/components/PrimaryButton';
 import { authService } from '@/services/authService';
+import { isGoogleSignInConfigured, signInWithGoogle } from '@/services/googleSignIn';
 import { useAuthStore, useLanguageStore } from '@/store';
 import { colors, fontSizes, spacing } from '@/theme';
+
+WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen() {
   const { login } = useAuthStore();
   const { language } = useLanguageStore();
 
-  // Mode: 'phone' (step 1) or 'otp' (step 2)
-  const [mode, setMode] = useState<'phone' | 'otp'>('phone');
+  // Mode: 'login' or 'register'
+  const [tab, setTab] = useState<'login' | 'register'>('login');
 
-  // Step 1: Mobile state
-  const [phone, setPhone] = useState('9876543210');
-  const [phoneError, setPhoneError] = useState('');
-  const [sendingOtp, setSendingOtp] = useState(false);
+  // Login form state
+  const [loginIdentifier, setLoginIdentifier] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [loginLoading, setLoginLoading] = useState(false);
 
-  // Step 2: 6-box OTP state
-  const [otp, setOtp] = useState<string[]>(['', '', '', '', '', '']);
-  const [verifying, setVerifying] = useState(false);
-  const [resendTimer, setResendTimer] = useState(30);
-  const [canResend, setCanResend] = useState(false);
+  // Register form state
+  const [regName, setRegName] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regMobile, setRegMobile] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [showRegPassword, setShowRegPassword] = useState(false);
+  const [regRole, setRegRole] = useState<'buyer' | 'seller'>('buyer');
+  const [regLoading, setRegLoading] = useState(false);
 
-  // Refs for the 6 OTP input boxes
-  const inputRefs = useRef<any[]>([]);
+  const [googleLoading, setGoogleLoading] = useState(false);
 
-  // 30-second countdown timer for OTP resend
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | null = null;
-
-    if (mode === 'otp' && resendTimer > 0) {
-      interval = setInterval(() => {
-        setResendTimer((prev) => {
-          if (prev <= 1) {
-            setCanResend(true);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+  // Handle successful authentication
+  const handleAuthSuccess = async (token: string, role?: 'buyer' | 'seller' | null) => {
+    if (role === 'buyer') {
+      await login(token, 'buyer');
+      router.replace('/(buyer)/(tabs)');
+    } else if (role === 'seller') {
+      await login(token, 'seller');
+      router.replace('/(seller)/(tabs)');
+    } else {
+      await login(token);
+      router.push('/(auth)/role-select');
     }
+  };
 
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [mode, resendTimer]);
-
-  // Step 1: Validate Indian phone number and request OTP
-  const handleSendOtp = async () => {
-    const cleanPhone = phone.replace(/\D/g, '');
-
-    if (!cleanPhone) {
-      setPhoneError(
+  // 1. Password Login
+  const handleLogin = async () => {
+    if (!loginIdentifier.trim()) {
+      Alert.alert(
+        language === 'ta' ? 'தேவைப்படுகிறது' : 'Required',
         language === 'ta'
-          ? 'தொலைபேசி எண்ணை உள்ளிடவும்.'
-          : 'Please enter your 10-digit mobile number.'
+          ? 'மின்னஞ்சல் அல்லது மொபைல் எண்ணை உள்ளிடவும்.'
+          : 'Please enter your email or mobile number.'
+      );
+      return;
+    }
+    if (!loginPassword) {
+      Alert.alert(
+        language === 'ta' ? 'தேவைப்படுகிறது' : 'Required',
+        language === 'ta' ? 'கடவுச்சொல்லை உள்ளிடவும்.' : 'Please enter your password.'
       );
       return;
     }
 
-    if (!authService.isValidIndianMobile(cleanPhone)) {
-      setPhoneError(
-        language === 'ta'
-          ? 'சரியான 10 இலக்க இந்திய தொலைபேசி எண்ணை உள்ளிடவும் (6, 7, 8, அல்லது 9-ல் தொடங்க வேண்டும்).'
-          : 'Please enter a valid 10-digit Indian number (starts with 6, 7, 8, or 9).'
-      );
-      return;
-    }
-
-    setPhoneError('');
-    setSendingOtp(true);
-
+    setLoginLoading(true);
     try {
-      const res = await authService.sendOtp(cleanPhone);
-      setSendingOtp(false);
+      const res = await authService.loginWithPassword({
+        emailOrMobile: loginIdentifier,
+        password: loginPassword,
+      });
+      setLoginLoading(false);
 
-      if (res.success) {
-        setMode('otp');
-        setOtp(['', '', '', '', '', '']);
-        setResendTimer(30);
-        setCanResend(false);
-
-        // Focus first box automatically
-        setTimeout(() => {
-          inputRefs.current[0]?.focus();
-        }, 150);
+      if (res.success && res.token) {
+        await handleAuthSuccess(res.token, res.role);
       } else {
-        Alert.alert('Error', res.message);
+        Alert.alert(
+          language === 'ta' ? 'உள்நுழைவு தோல்வி' : 'Login Failed',
+          res.message || 'Invalid email or password.'
+        );
       }
     } catch {
-      setSendingOtp(false);
+      setLoginLoading(false);
       Alert.alert('Error', 'Failed to connect to authentication service.');
     }
   };
 
-  // Step 2: Handle OTP input digit change & auto-advance
-  const handleOtpChange = (value: string, index: number) => {
-    const digit = value.replace(/\D/g, '').slice(-1);
-    const newOtp = [...otp];
-    newOtp[index] = digit;
-    setOtp(newOtp);
-
-    // Auto-focus next box if digit is entered
-    if (digit && index < 5) {
-      inputRefs.current[index + 1]?.focus();
-    }
-  };
-
-  // Handle backspace navigation in OTP boxes
-  const handleOtpKeyPress = (key: string, index: number) => {
-    if (key === 'Backspace' && !otp[index] && index > 0) {
-      inputRefs.current[index - 1]?.focus();
-    }
-  };
-
-  // Step 2: Verify the 6-digit OTP
-  const handleVerifyOtp = async () => {
-    const fullOtp = otp.join('');
-
-    if (fullOtp.length < 6) {
+  // 2. Registration
+  const handleRegister = async () => {
+    if (!regName.trim()) {
       Alert.alert(
-        language === 'ta' ? 'முழுமையற்ற OTP' : 'Incomplete OTP',
+        language === 'ta' ? 'தேவைப்படுகிறது' : 'Required',
+        language === 'ta' ? 'உங்கள் பெயரை உள்ளிடவும்.' : 'Please enter your full name.'
+      );
+      return;
+    }
+    if (!regEmail.trim() || !regEmail.includes('@')) {
+      Alert.alert(
+        language === 'ta' ? 'தவறான மின்னஞ்சல்' : 'Invalid Email',
         language === 'ta'
-          ? '6 இலக்க OTP எண்ணை உள்ளிடவும்.'
-          : 'Please enter all 6 digits of the verification code.'
+          ? 'சரியான மின்னஞ்சல் முகவரியை உள்ளிடவும்.'
+          : 'Please enter a valid email address.'
+      );
+      return;
+    }
+    if (!regPassword || regPassword.length < 8) {
+      Alert.alert(
+        language === 'ta' ? 'எளிய கடவுச்சொல்' : 'Weak Password',
+        language === 'ta'
+          ? 'கடவுச்சொல் குறைந்தது 8 எழுத்துகள் இருக்க வேண்டும்.'
+          : 'Password must be at least 8 characters.'
+      );
+      return;
+    }
+    if (regMobile.trim() && !/^[6-9]\d{9}$/.test(regMobile.trim())) {
+      Alert.alert(
+        language === 'ta' ? 'தவறான மொபைல் எண்' : 'Invalid Mobile Number',
+        language === 'ta'
+          ? '6-9 இல் தொடங்கும் 10 இலக்க மொபைல் எண்ணை உள்ளிடவும்.'
+          : 'Enter a 10-digit Indian mobile number starting with 6-9.'
       );
       return;
     }
 
-    setVerifying(true);
-
+    setRegLoading(true);
     try {
-      const res = await authService.verifyOtp(phone, fullOtp);
-      setVerifying(false);
+      const res = await authService.register({
+        name: regName.trim(),
+        email: regEmail.trim(),
+        mobile: regMobile.trim() || undefined,
+        password: regPassword,
+        role: regRole,
+      });
+      setRegLoading(false);
 
       if (res.success && res.token) {
-        // Save session token in auth store
-        await login(res.token);
-        // Direct to role selection screen
-        router.push('/(auth)/role-select');
+        Alert.alert(
+          language === 'ta' ? 'வெற்றி' : 'Success',
+          language === 'ta'
+            ? 'உங்கள் கணக்கு வெற்றிகரமாக உருவாக்கப்பட்டது!'
+            : 'Your account has been created successfully!'
+        );
+        await handleAuthSuccess(res.token, regRole);
       } else {
         Alert.alert(
-          language === 'ta' ? 'தவறான OTP' : 'Invalid OTP',
-          res.message || 'Please check the code and try again.'
+          language === 'ta' ? 'பதிவு தோல்வி' : 'Registration Failed',
+          res.message || 'Could not register account.'
         );
       }
     } catch {
-      setVerifying(false);
-      Alert.alert('Error', 'Verification failed. Please try again.');
+      setRegLoading(false);
+      Alert.alert('Error', 'Failed to connect to registration service.');
     }
   };
 
-  // Resend OTP handler
-  const handleResend = async () => {
-    if (!canResend) return;
-
-    setCanResend(false);
-    setResendTimer(30);
-    setOtp(['', '', '', '', '', '']);
-
+  // 3. Google Sign-In: get a Google token (native picker / web popup) and let the server verify it
+  const handleGooglePress = async () => {
+    if (!isGoogleSignInConfigured || googleLoading) return;
     try {
-      const res = await authService.resendOtp(phone);
-      Alert.alert(
-        language === 'ta' ? 'OTP அனுப்பப்பட்டது' : 'OTP Resent',
-        res.message
-      );
-      inputRefs.current[0]?.focus();
-    } catch {
-      Alert.alert('Error', 'Failed to resend OTP.');
+      setGoogleLoading(true);
+      const credential = await signInWithGoogle();
+      if (!credential) return; // user cancelled
+
+      const authRes = await authService.googleAuth({
+        ...credential,
+        role: tab === 'register' ? regRole : undefined,
+      });
+      if (authRes.success && authRes.token) {
+        await handleAuthSuccess(authRes.token, authRes.role);
+      } else {
+        Alert.alert('Google sign-in failed', authRes.message || 'Please try again.');
+      }
+    } catch (err: any) {
+      Alert.alert('Google sign-in failed', err?.message || 'Please try again.');
+    } finally {
+      setGoogleLoading(false);
     }
-  };
-
-  // Quick 1-tap test shortcuts
-  const handleDirectBuyer = async () => {
-    await login('mock-quick-buyer-token', 'buyer');
-    router.replace('/(buyer)/(tabs)');
-  };
-
-  const handleDirectSeller = async () => {
-    await login('mock-quick-seller-token', 'seller');
-    router.replace('/(seller)/(tabs)');
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      {/* AppHeader with Back support and Language toggle */}
       <AppHeader
-        showBack={mode === 'otp'}
-        title={mode === 'otp' ? (language === 'ta' ? 'சரிபார்ப்பு' : 'Verification') : 'FarmKart'}
+        title="FarmKart"
+        showBack={false}
         showSearch={false}
         showCart={false}
         showNotifications={false}
@@ -226,223 +222,295 @@ export default function LoginScreen() {
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          {mode === 'phone' ? (
-            /* ================= STEP 1: MOBILE NUMBER INPUT ================= */
-            <View style={styles.stepContainer}>
-              <View style={styles.titleSection}>
-                <View style={styles.iconCircle}>
-                  <MaterialCommunityIcons
-                    name="phone-check-outline"
-                    size={40}
-                    color={colors.primary}
-                  />
-                </View>
+          {/* Logo & Welcome Header */}
+          <View style={styles.headerSection}>
+            <View style={styles.logoBadge}>
+              <MaterialCommunityIcons name="sprout" size={36} color={colors.primary} />
+            </View>
+            <Text style={styles.mainTitle}>
+              {tab === 'login'
+                ? language === 'ta'
+                  ? 'வணக்கம்! மீண்டும் வருக'
+                  : 'Welcome to FarmKart'
+                : language === 'ta'
+                ? 'புதிய கணக்கை தொடங்குங்கள்'
+                : 'Join FarmKart Today'}
+            </Text>
+            <Text style={styles.subText}>
+              {language === 'ta'
+                ? 'விவசாயிகளிடமிருந்து நேரடியாக வாங்குங்கள் அல்லது விற்கவும்.'
+                : 'Direct Farm-to-Door marketplace connecting farmers & buyers.'}
+            </Text>
+          </View>
 
-                <Text style={styles.mainTitle}>
-                  {language === 'ta' ? 'உள்நுழையவும்' : 'Enter Mobile Number'}
-                </Text>
+          {/* Tab Selector: Login vs Register */}
+          <View style={styles.tabContainer}>
+            <Pressable
+              style={[styles.tabButton, tab === 'login' && styles.tabButtonActive]}
+              onPress={() => setTab('login')}>
+              <MaterialCommunityIcons
+                name="login-variant"
+                size={18}
+                color={tab === 'login' ? colors.white : colors.textSecondary}
+              />
+              <Text
+                style={[styles.tabText, tab === 'login' && styles.tabTextActive]}>
+                {language === 'ta' ? 'உள்நுழைக' : 'Sign In'}
+              </Text>
+            </Pressable>
 
-                <Text style={styles.subText}>
-                  {language === 'ta'
-                    ? 'உங்கள் 10 இலக்க இந்திய தொலைபேசி எண்ணிற்கு OTP குறியீடு அனுப்பப்படும்.'
-                    : 'We will send a 6-digit verification code to your Indian mobile number.'}
-                </Text>
-              </View>
+            <Pressable
+              style={[styles.tabButton, tab === 'register' && styles.tabButtonActive]}
+              onPress={() => setTab('register')}>
+              <MaterialCommunityIcons
+                name="account-plus-outline"
+                size={18}
+                color={tab === 'register' ? colors.white : colors.textSecondary}
+              />
+              <Text
+                style={[styles.tabText, tab === 'register' && styles.tabTextActive]}>
+                {language === 'ta' ? 'பதிவு செய்க' : 'Register'}
+              </Text>
+            </Pressable>
+          </View>
 
-              <Card style={styles.formCard}>
+          {/* Form Card */}
+          <Card style={styles.card}>
+            {tab === 'login' ? (
+              /* ================= LOGIN FORM ================= */
+              <View>
                 <Text style={styles.fieldLabel}>
-                  {language === 'ta' ? 'மொபைல் எண்' : 'Indian Mobile Number'}
+                  {language === 'ta' ? 'மின்னஞ்சல் அல்லது மொபைல்' : 'Email or Mobile Number'}
                 </Text>
-
-                <View
-                  style={[
-                    styles.phoneInputRow,
-                    phoneError ? styles.inputErrorBorder : null,
-                  ]}>
-                  <View style={styles.prefixBox}>
-                    <Text style={styles.flagEmoji}>🇮🇳</Text>
-                    <Text style={styles.prefixText}>+91</Text>
-                  </View>
-
+                <View style={styles.inputRow}>
+                  <MaterialCommunityIcons
+                    name="account-outline"
+                    size={20}
+                    color={colors.textSecondary}
+                    style={styles.inputIcon}
+                  />
                   <TextInput
-                    style={styles.phoneInput}
-                    placeholder="98765 43210"
+                    style={styles.textInput}
+                    placeholder="karthik@example.com or 9876543210"
                     placeholderTextColor={colors.textMuted}
-                    keyboardType="number-pad"
-                    maxLength={10}
-                    value={phone}
-                    onChangeText={(txt) => {
-                      setPhone(txt);
-                      if (phoneError) setPhoneError('');
-                    }}
+                    autoCapitalize="none"
+                    value={loginIdentifier}
+                    onChangeText={setLoginIdentifier}
                   />
                 </View>
 
-                {phoneError ? (
-                  <Text style={styles.errorText}>
+                <Text style={styles.fieldLabel}>
+                  {language === 'ta' ? 'கடவுச்சொல்' : 'Password'}
+                </Text>
+                <View style={styles.inputRow}>
+                  <MaterialCommunityIcons
+                    name="lock-outline"
+                    size={20}
+                    color={colors.textSecondary}
+                    style={styles.inputIcon}
+                  />
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="••••••••"
+                    placeholderTextColor={colors.textMuted}
+                    secureTextEntry={!showLoginPassword}
+                    value={loginPassword}
+                    onChangeText={setLoginPassword}
+                  />
+                  <Pressable
+                    onPress={() => setShowLoginPassword(!showLoginPassword)}
+                    style={styles.eyeBtn}>
                     <MaterialCommunityIcons
-                      name="alert-circle-outline"
-                      size={13}
-                      color={colors.error}
-                    />{' '}
-                    {phoneError}
-                  </Text>
-                ) : (
-                  <Text style={styles.helperText}>
-                    Must be 10 digits starting with 6, 7, 8, or 9
-                  </Text>
-                )}
+                      name={showLoginPassword ? 'eye-off-outline' : 'eye-outline'}
+                      size={20}
+                      color={colors.textSecondary}
+                    />
+                  </Pressable>
+                </View>
 
                 <PrimaryButton
-                  title={language === 'ta' ? 'OTP அனுப்பவும்' : 'Send Verification OTP'}
-                  icon="arrow-right"
-                  loading={sendingOtp}
-                  onPress={handleSendOtp}
-                  style={styles.actionBtn}
+                  title={language === 'ta' ? 'உள்நுழைக' : 'Sign In'}
+                  icon="login"
+                  loading={loginLoading}
+                  onPress={handleLogin}
+                  style={styles.submitBtn}
                 />
-              </Card>
-
-              {/* Quick Testing Shortcuts */}
-              <View style={styles.testingBox}>
-                <Text style={styles.testingHeading}>
-                  {language === 'ta' ? 'நேரடி சோதனை குறுக்குவழி:' : 'Instant Demo Shortcuts:'}
+              </View>
+            ) : (
+              /* ================= REGISTER FORM ================= */
+              <View>
+                <Text style={styles.fieldLabel}>
+                  {language === 'ta' ? 'முழு பெயர்' : 'Full Name'}
                 </Text>
-                <View style={styles.testingRow}>
+                <View style={styles.inputRow}>
+                  <MaterialCommunityIcons
+                    name="account-outline"
+                    size={20}
+                    color={colors.textSecondary}
+                    style={styles.inputIcon}
+                  />
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="e.g. Vignesh Kumar"
+                    placeholderTextColor={colors.textMuted}
+                    value={regName}
+                    onChangeText={setRegName}
+                  />
+                </View>
+
+                <Text style={styles.fieldLabel}>
+                  {language === 'ta' ? 'மின்னஞ்சல் முகவரி' : 'Email Address'}
+                </Text>
+                <View style={styles.inputRow}>
+                  <MaterialCommunityIcons
+                    name="email-outline"
+                    size={20}
+                    color={colors.textSecondary}
+                    style={styles.inputIcon}
+                  />
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="vignesh@example.com"
+                    placeholderTextColor={colors.textMuted}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    value={regEmail}
+                    onChangeText={setRegEmail}
+                  />
+                </View>
+
+                <Text style={styles.fieldLabel}>
+                  {language === 'ta' ? 'மொபைல் எண் (விருப்பத்திற்குரியது)' : 'Mobile Number (Optional)'}
+                </Text>
+                <View style={styles.inputRow}>
+                  <MaterialCommunityIcons
+                    name="phone-outline"
+                    size={20}
+                    color={colors.textSecondary}
+                    style={styles.inputIcon}
+                  />
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="9876543210"
+                    placeholderTextColor={colors.textMuted}
+                    keyboardType="phone-pad"
+                    maxLength={10}
+                    value={regMobile}
+                    onChangeText={setRegMobile}
+                  />
+                </View>
+
+                <Text style={styles.fieldLabel}>
+                  {language === 'ta' ? 'கடவுச்சொல் (குறைந்தது 6 எழுத்துகள்)' : 'Password (min 6 characters)'}
+                </Text>
+                <View style={styles.inputRow}>
+                  <MaterialCommunityIcons
+                    name="lock-outline"
+                    size={20}
+                    color={colors.textSecondary}
+                    style={styles.inputIcon}
+                  />
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="••••••••"
+                    placeholderTextColor={colors.textMuted}
+                    secureTextEntry={!showRegPassword}
+                    value={regPassword}
+                    onChangeText={setRegPassword}
+                  />
                   <Pressable
-                    style={styles.testBuyerBtn}
-                    onPress={handleDirectBuyer}>
+                    onPress={() => setShowRegPassword(!showRegPassword)}
+                    style={styles.eyeBtn}>
+                    <MaterialCommunityIcons
+                      name={showRegPassword ? 'eye-off-outline' : 'eye-outline'}
+                      size={20}
+                      color={colors.textSecondary}
+                    />
+                  </Pressable>
+                </View>
+
+                <Text style={styles.fieldLabel}>
+                  {language === 'ta' ? 'உங்கள் பங்கு' : 'Select Your Role'}
+                </Text>
+                <View style={styles.roleRow}>
+                  <Pressable
+                    style={[styles.roleCard, regRole === 'buyer' && styles.roleCardActive]}
+                    onPress={() => setRegRole('buyer')}>
                     <MaterialCommunityIcons
                       name="basket"
-                      size={18}
-                      color={colors.accent}
+                      size={24}
+                      color={regRole === 'buyer' ? colors.primary : colors.textSecondary}
                     />
-                    <Text style={styles.testBuyerText}>Buyer Demo</Text>
+                    <Text
+                      style={[styles.roleTitle, regRole === 'buyer' && styles.roleTitleActive]}>
+                      {language === 'ta' ? 'வாங்குபவர்' : 'Buyer'}
+                    </Text>
+                    <Text style={styles.roleDesc}>
+                      {language === 'ta' ? 'புதிய காய்கறிகள் வாங்க' : 'Buy farm-fresh goods'}
+                    </Text>
                   </Pressable>
 
                   <Pressable
-                    style={styles.testSellerBtn}
-                    onPress={handleDirectSeller}>
+                    style={[styles.roleCard, regRole === 'seller' && styles.roleCardActive]}
+                    onPress={() => setRegRole('seller')}>
                     <MaterialCommunityIcons
                       name="tractor"
-                      size={18}
-                      color={colors.white}
+                      size={24}
+                      color={regRole === 'seller' ? colors.primary : colors.textSecondary}
                     />
-                    <Text style={styles.testSellerText}>Farmer Demo</Text>
-                  </Pressable>
-                </View>
-              </View>
-            </View>
-          ) : (
-            /* ================= STEP 2: 6-BOX OTP VERIFICATION ================= */
-            <View style={styles.stepContainer}>
-              <View style={styles.titleSection}>
-                <View style={[styles.iconCircle, { backgroundColor: colors.accentLight }]}>
-                  <MaterialCommunityIcons
-                    name="shield-key-outline"
-                    size={40}
-                    color={colors.accent}
-                  />
-                </View>
-
-                <Text style={styles.mainTitle}>
-                  {language === 'ta' ? 'OTP சரிபார்ப்பு' : 'Verify Mobile OTP'}
-                </Text>
-
-                <View style={styles.phoneChangeRow}>
-                  <Text style={styles.subText}>
-                    Sent to{' '}
-                    <Text style={styles.phoneBold}>+91 {phone}</Text>
-                  </Text>
-
-                  <Pressable
-                    style={styles.editBtn}
-                    onPress={() => setMode('phone')}>
-                    <Text style={styles.editText}>
-                      {language === 'ta' ? 'மாற்று' : 'Edit'}
+                    <Text
+                      style={[styles.roleTitle, regRole === 'seller' && styles.roleTitleActive]}>
+                      {language === 'ta' ? 'விவசாயி' : 'Farmer'}
+                    </Text>
+                    <Text style={styles.roleDesc}>
+                      {language === 'ta' ? 'விளைபொருட்களை விற்க' : 'Sell your harvest'}
                     </Text>
                   </Pressable>
-                </View>
-              </View>
-
-              <Card style={styles.formCard}>
-                <Text style={styles.fieldLabel}>
-                  {language === 'ta' ? '6-இலக்க குறியீடு' : 'Enter 6-Digit Code'}
-                </Text>
-
-                {/* 6 OTP Input Boxes */}
-                <View style={styles.otpGrid}>
-                  {otp.map((digit, index) => (
-                    <TextInput
-                      key={index}
-                      ref={(el) => {
-                        inputRefs.current[index] = el;
-                      }}
-                      style={[
-                        styles.otpBox,
-                        digit ? styles.otpBoxFilled : null,
-                      ]}
-                      keyboardType="number-pad"
-                      maxLength={1}
-                      value={digit}
-                      onChangeText={(val) => handleOtpChange(val, index)}
-                      onKeyPress={({ nativeEvent }) =>
-                        handleOtpKeyPress(nativeEvent.key, index)
-                      }
-                      selectTextOnFocus
-                    />
-                  ))}
-                </View>
-
-                {/* 30s Countdown Timer / Resend Button */}
-                <View style={styles.timerRow}>
-                  {canResend ? (
-                    <Pressable onPress={handleResend} style={styles.resendAction}>
-                      <MaterialCommunityIcons
-                        name="refresh"
-                        size={16}
-                        color={colors.primary}
-                      />
-                      <Text style={styles.resendActiveText}>
-                        {language === 'ta' ? 'மீண்டும் OTP அனுப்புக' : 'Resend OTP'}
-                      </Text>
-                    </Pressable>
-                  ) : (
-                    <Text style={styles.timerMutedText}>
-                      <MaterialCommunityIcons
-                        name="clock-outline"
-                        size={14}
-                        color={colors.textMuted}
-                      />{' '}
-                      {language === 'ta'
-                        ? `${resendTimer} வினாடிகளில் மீண்டும் அனுப்பலாம்`
-                        : `Resend code in ${resendTimer}s`}
-                    </Text>
-                  )}
                 </View>
 
                 <PrimaryButton
-                  title={language === 'ta' ? 'சரிபார்த்து தொடர்க' : 'Verify & Continue'}
-                  icon="check-circle-outline"
-                  loading={verifying}
-                  onPress={handleVerifyOtp}
-                  style={styles.actionBtn}
+                  title={language === 'ta' ? 'கணக்கை உருவாக்குக' : 'Create Account'}
+                  icon="account-check-outline"
+                  loading={regLoading}
+                  onPress={handleRegister}
+                  style={styles.submitBtn}
                 />
-              </Card>
-
-              {/* Developer Hint */}
-              <View style={styles.devHintBox}>
-                <MaterialCommunityIcons
-                  name="information-outline"
-                  size={16}
-                  color={colors.primaryDark}
-                />
-                <Text style={styles.devHintText}>
-                  Testing Mode: Enter any 6 digits (e.g.{' '}
-                  <Text style={{ fontWeight: '700' }}>123456</Text>) to proceed.
-                </Text>
               </View>
+            )}
+
+            {isGoogleSignInConfigured ? (
+            <>
+            {/* Divider */}
+            <View style={styles.dividerRow}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>
+                {language === 'ta' ? 'அல்லது' : 'OR CONTINUE WITH'}
+              </Text>
+              <View style={styles.dividerLine} />
             </View>
-          )}
+
+            {/* Google OAuth Button */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.googleBtn,
+                pressed && styles.googleBtnPressed,
+              ]}
+              disabled={googleLoading}
+              onPress={handleGooglePress}>
+              <MaterialCommunityIcons name="google" size={22} color="#EA4335" />
+              <Text style={styles.googleBtnText}>
+                {googleLoading
+                  ? language === 'ta'
+                    ? 'இணைக்கிறது...'
+                    : 'Connecting...'
+                  : language === 'ta'
+                  ? 'Google மூலம் உள்நுழைக'
+                  : 'Continue with Google'}
+              </Text>
+            </Pressable>
+            </>
+            ) : null}
+          </Card>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -461,220 +529,312 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     paddingBottom: spacing.xxl,
   },
-  stepContainer: {
-    gap: spacing.md,
-  },
-  titleSection: {
+  headerSection: {
     alignItems: 'center',
-    marginVertical: spacing.sm,
-    gap: 4,
+    marginVertical: spacing.md,
   },
-  iconCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+  logoBadge: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     backgroundColor: colors.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: spacing.xs,
+    marginBottom: spacing.sm,
   },
   mainTitle: {
-    fontSize: fontSizes.xl + 2,
-    fontWeight: '800',
-    color: colors.primaryDark,
-    textAlign: 'center',
-  },
-  subText: {
-    fontSize: fontSizes.xs + 1,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 19,
-    maxWidth: 320,
-  },
-  phoneBold: {
-    fontWeight: '700',
-    color: colors.text,
-  },
-  phoneChangeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 2,
-  },
-  editBtn: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    backgroundColor: colors.primaryLight,
-    borderRadius: 6,
-  },
-  editText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.primaryDark,
-  },
-  formCard: {
-    gap: spacing.sm + 2,
-  },
-  fieldLabel: {
-    fontSize: fontSizes.xs + 1,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  phoneInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    borderRadius: 10,
-    backgroundColor: colors.surfaceSecondary,
-    overflow: 'hidden',
-  },
-  inputErrorBorder: {
-    borderColor: colors.error,
-  },
-  prefixBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.sm + 2,
-    paddingVertical: 12,
-    borderRightWidth: 1,
-    borderRightColor: colors.border,
-    gap: 4,
-    backgroundColor: '#F3F4F6',
-  },
-  flagEmoji: {
-    fontSize: 16,
-  },
-  prefixText: {
-    fontSize: fontSizes.md,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  phoneInput: {
-    flex: 1,
-    fontSize: fontSizes.lg,
-    fontWeight: '700',
-    color: colors.text,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 10,
-    letterSpacing: 1,
-  },
-  helperText: {
-    fontSize: 11,
-    color: colors.textSecondary,
-  },
-  errorText: {
-    fontSize: 11,
-    color: colors.error,
-    fontWeight: '600',
-  },
-  otpGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 8,
-    marginVertical: spacing.xs,
-  },
-  otpBox: {
-    flex: 1,
-    height: 52,
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    borderRadius: 10,
-    textAlign: 'center',
     fontSize: fontSizes.xl,
     fontWeight: '800',
     color: colors.primaryDark,
+    textAlign: 'center',
+    marginBottom: spacing.xs,
+  },
+  subText: {
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    paddingHorizontal: spacing.md,
+  },
+  tabContainer: {
+    flexDirection: 'row',
     backgroundColor: colors.surfaceSecondary,
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: spacing.md,
   },
-  otpBoxFilled: {
-    borderColor: colors.primary,
-    backgroundColor: colors.surface,
-  },
-  timerRow: {
-    alignItems: 'center',
-    paddingVertical: 4,
-  },
-  timerMutedText: {
-    fontSize: fontSizes.xs,
-    color: colors.textMuted,
-    fontWeight: '500',
-  },
-  resendAction: {
+  tabButton: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 8,
+    gap: 6,
   },
-  resendActiveText: {
-    fontSize: fontSizes.xs + 1,
+  tabButtonActive: {
+    backgroundColor: colors.primary,
+  },
+  tabText: {
+    fontSize: fontSizes.sm,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  tabTextActive: {
+    color: colors.white,
     fontWeight: '700',
-    color: colors.primary,
   },
-  actionBtn: {
-    marginTop: spacing.xs,
+  card: {
+    padding: spacing.lg,
+    borderRadius: 16,
+    backgroundColor: colors.surface,
   },
-  testingBox: {
-    gap: spacing.xs,
-    marginTop: spacing.xs,
-  },
-  testingHeading: {
+  fieldLabel: {
     fontSize: fontSizes.xs,
     fontWeight: '700',
     color: colors.textSecondary,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
+    marginBottom: 6,
+    marginTop: spacing.sm,
   },
-  testingRow: {
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: 10,
+    backgroundColor: colors.background,
+    paddingHorizontal: spacing.sm,
+    height: 48,
+  },
+  inputIcon: {
+    marginRight: spacing.xs,
+  },
+  textInput: {
+    flex: 1,
+    fontSize: fontSizes.md,
+    color: colors.text,
+    paddingVertical: 8,
+  },
+  eyeBtn: {
+    padding: spacing.xs,
+  },
+  roleRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: 4,
+  },
+  roleCard: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: 12,
+    padding: spacing.sm,
+    alignItems: 'center',
+    backgroundColor: colors.background,
+  },
+  roleCardActive: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primaryLight,
+  },
+  roleTitle: {
+    fontSize: fontSizes.sm,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    marginTop: 4,
+  },
+  roleTitleActive: {
+    color: colors.primary,
+  },
+  roleDesc: {
+    fontSize: 11,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  submitBtn: {
+    marginTop: spacing.lg,
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: spacing.lg,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: colors.border,
+  },
+  dividerText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textMuted,
+    paddingHorizontal: spacing.sm,
+  },
+  googleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: 10,
+    paddingVertical: 12,
+    backgroundColor: colors.white,
+    gap: 10,
+  },
+  googleBtnPressed: {
+    backgroundColor: colors.surfaceSecondary,
+  },
+  googleBtnText: {
+    fontSize: fontSizes.md,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  demoSection: {
+    marginTop: spacing.lg,
+    padding: spacing.md,
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: 12,
+  },
+  demoHeading: {
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    marginBottom: spacing.sm,
+    textAlign: 'center',
+  },
+  demoRow: {
     flexDirection: 'row',
     gap: spacing.sm,
   },
-  testBuyerBtn: {
+  demoBuyerBtn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.accentLight,
-    paddingVertical: 10,
+    backgroundColor: colors.white,
+    borderWidth: 1.5,
+    borderColor: colors.accent,
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(245, 124, 0, 0.3)',
+    paddingVertical: 10,
     gap: 6,
   },
-  testBuyerText: {
-    fontSize: fontSizes.xs,
+  demoBuyerText: {
+    fontSize: fontSizes.sm,
     fontWeight: '700',
     color: colors.accent,
   },
-  testSellerBtn: {
+  demoSellerBtn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.primaryDark,
-    paddingVertical: 10,
+    backgroundColor: colors.primary,
     borderRadius: 8,
+    paddingVertical: 10,
     gap: 6,
   },
-  testSellerText: {
-    fontSize: fontSizes.xs,
+  demoSellerText: {
+    fontSize: fontSizes.sm,
     fontWeight: '700',
     color: colors.white,
   },
-  devHintBox: {
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
+  modalCard: {
+    backgroundColor: colors.surface,
+    borderRadius: 16,
+    padding: spacing.lg,
+  },
+  modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.primaryLight,
-    padding: spacing.sm,
-    borderRadius: 8,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(46, 125, 50, 0.2)',
+    gap: 10,
+    marginBottom: spacing.xs,
   },
-  devHintText: {
-    fontSize: 11,
-    color: colors.primaryDark,
+  modalTitle: {
+    fontSize: fontSizes.lg,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  modalSub: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+    marginBottom: spacing.md,
+  },
+  modalAccountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    marginBottom: spacing.sm,
+  },
+  modalAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: spacing.sm,
+  },
+  modalAvatarText: {
+    color: colors.white,
+    fontWeight: '700',
+    fontSize: fontSizes.md,
+  },
+  modalAccountDetails: {
     flex: 1,
-    lineHeight: 16,
+  },
+  modalAccountName: {
+    fontSize: fontSizes.sm,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  modalAccountEmail: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+  },
+  customEmailBox: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  customEmailInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: spacing.sm,
+    fontSize: fontSizes.xs,
+    height: 38,
+  },
+  customEmailBtn: {
+    backgroundColor: colors.primary,
+    borderRadius: 8,
+    paddingHorizontal: spacing.md,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  customEmailBtnText: {
+    color: colors.white,
+    fontWeight: '700',
+    fontSize: fontSizes.xs,
+  },
+  modalCloseBtn: {
+    paddingVertical: spacing.sm,
+    alignItems: 'center',
+  },
+  modalCloseText: {
+    color: colors.textMuted,
+    fontWeight: '600',
+    fontSize: fontSizes.sm,
   },
 });

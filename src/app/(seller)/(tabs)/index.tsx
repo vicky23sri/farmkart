@@ -1,16 +1,19 @@
 /**
  * Seller Dashboard Screen
- * Overview of farm earnings, today's orders, low stock alerts, farm rating, and weekly sales chart.
+ * Overview of farm earnings, active orders, low stock alerts, farm rating, and the last 7 days of sales,
+ * all computed from live API data.
  * Features the signature dark green header with "Seller Mode" pill.
  */
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
   Alert,
   Dimensions,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -19,16 +22,28 @@ import {
 
 import { AppHeader } from '@/components/AppHeader';
 import { Card } from '@/components/Card';
-import {
-  useLanguageStore,
-  useOrderStore,
-  useSellerProductStore,
-} from '@/store';
+import { authService } from '@/services/authService';
+import { orderService } from '@/services/orderService';
+import { payoutService } from '@/services/payoutService';
+import { productService } from '@/services/productService';
+import { reviewService } from '@/services/reviewService';
+import { useLanguageStore } from '@/store';
 import { colors, fontSizes, shadows, spacing } from '@/theme';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const LOW_STOCK_THRESHOLD = 15;
+const DAY_LABELS = [
+  { en: 'Sun', ta: 'ஞாயிறு' },
+  { en: 'Mon', ta: 'திங்கள்' },
+  { en: 'Tue', ta: 'செவ்வாய்' },
+  { en: 'Wed', ta: 'புதன்' },
+  { en: 'Thu', ta: 'வியாழன்' },
+  { en: 'Fri', ta: 'வெள்ளி' },
+  { en: 'Sat', ta: 'சனி' },
+];
 
 interface WeeklySalesDay {
+  key: string;
   day: string;
   dayTamil: string;
   amount: number;
@@ -36,30 +51,90 @@ interface WeeklySalesDay {
   isToday?: boolean;
 }
 
-const WEEKLY_DATA: WeeklySalesDay[] = [
-  { day: 'Mon', dayTamil: 'திங்கள்', amount: 8500, orders: 4 },
-  { day: 'Tue', dayTamil: 'செவ்வாய்', amount: 11200, orders: 5 },
-  { day: 'Wed', dayTamil: 'புதன்', amount: 9800, orders: 4 },
-  { day: 'Thu', dayTamil: 'வியாழன்', amount: 14500, orders: 7 },
-  { day: 'Fri', dayTamil: 'வெள்ளி', amount: 16200, orders: 8 },
-  { day: 'Sat', dayTamil: 'சனி', amount: 21000, orders: 11 },
-  { day: 'Sun', dayTamil: 'ஞாயிறு', amount: 18450, orders: 9, isToday: true },
-];
+function parseServerDate(ts?: string): Date | null {
+  if (!ts) return null;
+  const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : `${ts}Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+const formatINR = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
 
 export default function SellerDashboardScreen() {
   const { language } = useLanguageStore();
-  const { orders } = useOrderStore();
-  const { products, updateStock } = useSellerProductStore();
+  const queryClient = useQueryClient();
 
-  const [selectedDay, setSelectedDay] = useState<WeeklySalesDay>(WEEKLY_DATA[6]);
+  const { data: profile } = useQuery({ queryKey: ['me'], queryFn: () => authService.getProfile() });
+  const { data: ordersPage, refetch: refetchOrders } = useQuery({
+    queryKey: ['orders-mine', 'all', 100, 0],
+    queryFn: () => orderService.getMyOrders('all', 100, 0),
+    refetchInterval: 60000,
+  });
+  const { data: productsPage, refetch: refetchProducts } = useQuery({
+    queryKey: ['seller-products-dashboard'],
+    queryFn: () => productService.getMyProducts({ limit: 100, offset: 0 }),
+  });
+  const { data: payout, refetch: refetchPayout } = useQuery({
+    queryKey: ['payout-summary'],
+    queryFn: () => payoutService.getPayoutSummary(),
+  });
+  const { data: reviewsPage } = useQuery({
+    queryKey: ['seller-reviews-summary', profile?.id],
+    queryFn: () => reviewService.getSellerReviews(profile!.id, 100, 0),
+    enabled: Boolean(profile?.id),
+  });
+
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await Promise.allSettled([refetchOrders(), refetchProducts(), refetchPayout()]);
+    setRefreshing(false);
+  };
+
+  const orders = useMemo(() => ordersPage?.items ?? [], [ordersPage]);
+  const products = useMemo(() => productsPage?.items ?? [], [productsPage]);
 
   const lowStockItems = useMemo(
-    () => products.filter((p) => p.isActive && p.stock <= 15),
+    () => products.filter((p) => p.isActive !== false && p.stock <= LOW_STOCK_THRESHOLD),
     [products]
   );
 
-  const totalWeeklySales = WEEKLY_DATA.reduce((acc, curr) => acc + curr.amount, 0);
-  const maxWeeklyAmount = Math.max(...WEEKLY_DATA.map((d) => d.amount));
+  // Last 7 days of non-cancelled orders, grouped by local calendar day
+  const weeklyData: WeeklySalesDay[] = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const days: WeeklySalesDay[] = [];
+    for (let offset = 6; offset >= 0; offset--) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - offset);
+      const label = DAY_LABELS[d.getDay()];
+      days.push({ key: d.toDateString(), day: label.en, dayTamil: label.ta, amount: 0, orders: 0, isToday: offset === 0 });
+    }
+    for (const o of orders) {
+      if (o.status === 'cancelled' || o.status === 'rejected') continue;
+      const created = parseServerDate(o.createdAt);
+      if (!created) continue;
+      created.setHours(0, 0, 0, 0);
+      const bucket = days.find((d) => d.key === created.toDateString());
+      if (bucket) {
+        bucket.amount += o.grandTotal;
+        bucket.orders += 1;
+      }
+    }
+    return days;
+  }, [orders]);
+
+  const [selectedDayKey, setSelectedDayKey] = useState<string | null>(null);
+  const selectedDay = weeklyData.find((d) => d.key === selectedDayKey) ?? weeklyData[weeklyData.length - 1];
+  const totalWeeklySales = weeklyData.reduce((acc, curr) => acc + curr.amount, 0);
+  const maxWeeklyAmount = Math.max(1, ...weeklyData.map((d) => d.amount));
+
+  const todayStats = weeklyData[weeklyData.length - 1];
+  const activeOrders = orders.filter((o) => o.tab === 'ongoing').length;
+
+  const reviews = reviewsPage?.items ?? [];
+  const avgRating = reviews.length
+    ? reviews.reduce((acc, r) => acc + r.farmer_rating, 0) / reviews.length
+    : null;
 
   // Quick Restock handler for low-stock alert
   const handleQuickRestock = (productId: string, currentStock: number, name: string) => {
@@ -72,12 +147,18 @@ export default function SellerDashboardScreen() {
         { text: language === 'ta' ? 'ரத்து' : 'Cancel', style: 'cancel' },
         {
           text: language === 'ta' ? '+50 சேர்க்க' : '+50 Add Stock',
-          onPress: () => {
-            updateStock(productId, currentStock + 50);
-            Alert.alert(
-              language === 'ta' ? 'புதுப்பிக்கப்பட்டது' : 'Stock Updated',
-              `${name} stock is now ${currentStock + 50}.`
-            );
+          onPress: async () => {
+            try {
+              await productService.updateStock(productId, currentStock + 50);
+              queryClient.invalidateQueries({ queryKey: ['seller-products-dashboard'] });
+              queryClient.invalidateQueries({ queryKey: ['seller-my-products-infinite'] });
+              Alert.alert(
+                language === 'ta' ? 'புதுப்பிக்கப்பட்டது' : 'Stock Updated',
+                `${name} stock is now ${currentStock + 50}.`
+              );
+            } catch (err: any) {
+              Alert.alert('Could not update stock', err?.message || 'Please try again.');
+            }
           },
         },
       ]
@@ -96,6 +177,7 @@ export default function SellerDashboardScreen() {
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         showsVerticalScrollIndicator={false}>
         {/* Farm & Seller Welcome Banner */}
         <View style={styles.welcomeBanner}>
@@ -104,45 +186,44 @@ export default function SellerDashboardScreen() {
           </View>
           <View style={styles.welcomeInfo}>
             <View style={styles.farmerNameRow}>
-              <Text style={styles.welcomeFarmer}>Ramasamy Gounder</Text>
-              <View style={styles.verifiedTag}>
-                <MaterialCommunityIcons name="check-decagram" size={13} color={colors.white} />
-                <Text style={styles.verifiedText}>Verified</Text>
-              </View>
+              <Text style={styles.welcomeFarmer}>{profile?.name || (language === 'ta' ? 'விவசாயி' : 'Farmer')}</Text>
             </View>
-            <Text style={styles.farmSub}>
-              Vadipatti Iyarkai Pannai • Madurai District
-            </Text>
+            {profile?.address ? <Text style={styles.farmSub}>{profile.address}</Text> : null}
+            {!profile?.upi_id ? (
+              <Pressable onPress={() => router.push('/(seller)/(tabs)/profile')}>
+                <Text style={styles.farmSub}>
+                  {language === 'ta' ? '⚠️ UPI கட்டணம் பெற உங்கள் UPI ஐடியைச் சேர்க்கவும்' : '⚠️ Add your UPI ID to receive online payments'}
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
         </View>
 
-        {/* 4 Core Metric KPI Cards: Today's Orders, Earnings, Rating, Active Crops */}
+        {/* 4 Core Metric KPI Cards */}
         <View style={styles.metricsGrid}>
-          {/* 1. Today's Orders */}
+          {/* 1. Active Orders */}
           <Card style={styles.metricCard}>
             <View style={[styles.metricIconBg, { backgroundColor: '#E3F2FD' }]}>
               <MaterialCommunityIcons name="truck-fast" size={20} color="#1976D2" />
             </View>
-            <Text style={styles.metricValue}>
-              {orders.filter((o) => o.tab === 'ongoing').length || 6}
-            </Text>
+            <Text style={styles.metricValue}>{activeOrders}</Text>
             <Text style={styles.metricLabel}>
-              {language === 'ta' ? "இன்றைய ஆர்டர்கள்" : "Today's Orders"}
+              {language === 'ta' ? 'நடப்பு ஆர்டர்கள்' : 'Active Orders'}
             </Text>
-            <Text style={styles.metricDelta}>+2 from yesterday</Text>
+            <Text style={styles.metricDelta}>{todayStats?.orders ?? 0} placed today</Text>
           </Card>
 
-          {/* 2. Today's Earnings */}
+          {/* 2. Earnings */}
           <Card style={styles.metricCard}>
             <View style={[styles.metricIconBg, { backgroundColor: '#E8F5E9' }]}>
               <MaterialCommunityIcons name="currency-inr" size={20} color={colors.primaryDark} />
             </View>
-            <Text style={styles.metricValue}>₹18,450</Text>
+            <Text style={styles.metricValue}>{formatINR(payout?.total_earnings ?? 0)}</Text>
             <Text style={styles.metricLabel}>
-              {language === 'ta' ? 'இன்றைய வருவாய்' : "Today's Earnings"}
+              {language === 'ta' ? 'மொத்த வருவாய்' : 'Delivered Earnings'}
             </Text>
             <Text style={[styles.metricDelta, { color: colors.primaryDark }]}>
-              ₹74,200 this mo.
+              COD pending {formatINR(payout?.cod_pending ?? 0)}
             </Text>
           </Card>
 
@@ -152,13 +233,15 @@ export default function SellerDashboardScreen() {
               <MaterialCommunityIcons name="star" size={20} color="#F57F17" />
             </View>
             <View style={styles.ratingRow}>
-              <Text style={styles.metricValue}>4.9</Text>
+              <Text style={styles.metricValue}>{avgRating !== null ? avgRating.toFixed(1) : '—'}</Text>
               <Text style={styles.ratingMax}>/ 5</Text>
             </View>
             <Text style={styles.metricLabel}>
               {language === 'ta' ? 'பண்ணை மதிப்பீடு' : 'Farmer Rating'}
             </Text>
-            <Text style={styles.metricDelta}>148 verified reviews</Text>
+            <Text style={styles.metricDelta}>
+              {reviewsPage?.total ?? 0} reviews
+            </Text>
           </Card>
 
           {/* 4. Active Crops */}
@@ -167,13 +250,13 @@ export default function SellerDashboardScreen() {
               <MaterialCommunityIcons name="sprout" size={20} color="#5E35B1" />
             </View>
             <Text style={styles.metricValue}>
-              {products.filter((p) => p.isActive).length}
+              {products.filter((p) => p.isActive !== false).length}
             </Text>
             <Text style={styles.metricLabel}>
               {language === 'ta' ? 'செயலில் உள்ளவை' : 'Active Crops'}
             </Text>
             <Text style={styles.metricDelta}>
-              {products.length} total listed
+              {productsPage?.total ?? products.length} total listed
             </Text>
           </Card>
         </View>
@@ -239,39 +322,38 @@ export default function SellerDashboardScreen() {
           </Card>
         )}
 
-        {/* Simple Weekly Sales Chart */}
+        {/* Weekly Sales Chart (last 7 days, from real orders) */}
         <Card style={styles.chartCard}>
           <View style={styles.chartHeader}>
             <View>
               <Text style={styles.chartTitle}>
-                {language === 'ta' ? 'வாராந்திர விற்பனை வரைபடம்' : 'Weekly Sales Performance'}
+                {language === 'ta' ? 'கடந்த 7 நாட்கள் விற்பனை' : 'Last 7 Days Sales'}
               </Text>
-              <Text style={styles.chartSubtitle}>
-                Total: ₹{totalWeeklySales.toLocaleString('en-IN')}{' '}
-                <Text style={styles.chartGrowthTag}>+24% vs last week</Text>
-              </Text>
+              <Text style={styles.chartSubtitle}>Total: {formatINR(totalWeeklySales)}</Text>
             </View>
-            <View style={styles.chartBadge}>
-              <Text style={styles.chartBadgeText}>
-                {selectedDay.day}: ₹{selectedDay.amount.toLocaleString('en-IN')} (
-                {selectedDay.orders} orders)
-              </Text>
-            </View>
+            {selectedDay ? (
+              <View style={styles.chartBadge}>
+                <Text style={styles.chartBadgeText}>
+                  {selectedDay.day}: {formatINR(selectedDay.amount)} ({selectedDay.orders} orders)
+                </Text>
+              </View>
+            ) : null}
           </View>
 
-          {/* Bar Chart Visualization */}
           <View style={styles.barContainer}>
-            {WEEKLY_DATA.map((item) => {
-              const isSelected = selectedDay.day === item.day;
-              const barHeightPct = Math.max(15, (item.amount / maxWeeklyAmount) * 100);
+            {weeklyData.map((item) => {
+              const isSelected = selectedDay?.key === item.key;
+              const barHeightPct = item.amount > 0 ? Math.max(8, (item.amount / maxWeeklyAmount) * 100) : 2;
 
               return (
                 <Pressable
-                  key={item.day}
-                  onPress={() => setSelectedDay(item)}
+                  key={item.key}
+                  onPress={() => setSelectedDayKey(item.key)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${item.day}: ${formatINR(item.amount)}, ${item.orders} orders`}
                   style={styles.barColumn}>
                   <Text style={[styles.barValueTag, isSelected && styles.barValueTagActive]}>
-                    ₹{(item.amount / 1000).toFixed(1)}k
+                    {item.amount >= 1000 ? `₹${(item.amount / 1000).toFixed(1)}k` : `₹${Math.round(item.amount)}`}
                   </Text>
                   <View style={styles.barTrack}>
                     <View
@@ -316,45 +398,6 @@ export default function SellerDashboardScreen() {
             </Text>
           </Pressable>
         </View>
-
-        {/* Live Mandi Benchmark Rates */}
-        <Card style={styles.mandiCard}>
-          <View style={styles.mandiHeader}>
-            <View style={styles.mandiHeaderLeft}>
-              <MaterialCommunityIcons
-                name="chart-line"
-                size={20}
-                color={colors.primary}
-              />
-              <Text style={styles.mandiTitle}>
-                {language === 'ta'
-                  ? 'இன்றைய மண்டி நேரடி விலை'
-                  : "Today's Mandi Benchmark Rates"}
-              </Text>
-            </View>
-            <View style={styles.livePill}>
-              <View style={styles.liveBlinkDot} />
-              <Text style={styles.mandiLiveTag}>LIVE</Text>
-            </View>
-          </View>
-
-          <View style={styles.rateRow}>
-            <Text style={styles.cropName}>Country Tomato (நாட்டு தக்காளி)</Text>
-            <Text style={styles.cropPrice}>₹32 - ₹36 / kg</Text>
-          </View>
-          <View style={styles.rateRow}>
-            <Text style={styles.cropName}>Shallot Onion (சின்ன வெங்காயம்)</Text>
-            <Text style={styles.cropPrice}>₹42 - ₹48 / kg</Text>
-          </View>
-          <View style={styles.rateRow}>
-            <Text style={styles.cropName}>Seeraga Samba Nellu (சீரக சம்பா)</Text>
-            <Text style={styles.cropPrice}>₹4,000 - ₹4,400 / quintal</Text>
-          </View>
-          <View style={styles.rateRow}>
-            <Text style={styles.cropName}>Organic Cow Dung (மாட்டு எருவு)</Text>
-            <Text style={styles.cropPrice}>₹3,200 - ₹3,600 / tractor</Text>
-          </View>
-        </Card>
       </ScrollView>
     </View>
   );

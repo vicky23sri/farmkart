@@ -33,6 +33,13 @@ export interface ReviewItem {
   buyer_name?: string;
 }
 
+export interface PaginatedReviews {
+  items: ReviewItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export const reviewService = {
   /**
    * Buyer creates a review for a delivered order item.
@@ -51,19 +58,45 @@ export const reviewService = {
   },
 
   /**
-   * Get all reviews for a product.
+   * Get reviews for a product with limit/offset pagination.
    */
-  async getProductReviews(productId: number): Promise<ReviewItem[]> {
-    const res = (await apiClient.get(`/reviews/product/${productId}`)) as ReviewItem[];
-    return res;
+  async getProductReviews(
+    productId: number,
+    limit = 20,
+    offset = 0
+  ): Promise<PaginatedReviews> {
+    const res = (await apiClient.get(`/reviews/product/${productId}`, {
+      params: { limit, offset },
+    })) as PaginatedReviews | ReviewItem[];
+
+    if (res && 'items' in res && Array.isArray(res.items)) {
+      return res;
+    }
+    if (Array.isArray(res)) {
+      return { items: res, total: res.length, limit: res.length, offset: 0 };
+    }
+    return { items: [], total: 0, limit, offset };
   },
 
   /**
-   * Get all reviews for a seller's farm.
+   * Get all reviews for a seller's farm with limit/offset pagination.
    */
-  async getSellerReviews(sellerId: number): Promise<ReviewItem[]> {
-    const res = (await apiClient.get(`/reviews/seller/${sellerId}`)) as ReviewItem[];
-    return res;
+  async getSellerReviews(
+    sellerId: number,
+    limit = 20,
+    offset = 0
+  ): Promise<PaginatedReviews> {
+    const res = (await apiClient.get(`/reviews/seller/${sellerId}`, {
+      params: { limit, offset },
+    })) as PaginatedReviews | ReviewItem[];
+
+    if (res && 'items' in res && Array.isArray(res.items)) {
+      return res;
+    }
+    if (Array.isArray(res)) {
+      return { items: res, total: res.length, limit: res.length, offset: 0 };
+    }
+    return { items: [], total: 0, limit, offset };
   },
 };
 

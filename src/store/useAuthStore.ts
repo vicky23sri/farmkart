@@ -32,7 +32,7 @@ interface AuthState {
 const TOKEN_KEY = 'farmkart_auth_token';
 const ROLE_KEY = 'farmkart_user_role';
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   isLoggedIn: false,
   token: null,
   role: null,
@@ -64,16 +64,34 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
+    const previousToken = get().token;
+    // 1. Always clear the local session first, so logout works offline and can never loop
+    set({ isLoggedIn: false, token: null, role: null });
+    await storage.removeItem(TOKEN_KEY);
+    await storage.removeItem(ROLE_KEY);
+
+    // 2. Best-effort server/device cleanup
     try {
-      await storage.removeItem(TOKEN_KEY);
-      await storage.removeItem(ROLE_KEY);
-      set({
-        isLoggedIn: false,
-        token: null,
-        role: null,
-      });
+      const { notificationService } = await import('@/services/notificationService');
+      const { useNotificationStore } = await import('./useNotificationStore');
+      const { useCartStore } = await import('./useCartStore');
+      const { useWishlistStore } = await import('./useWishlistStore');
+      const { useLocationStore } = await import('./useLocationStore');
+      const { queryClient } = await import('@/services/queryClient');
+      const pushToken = useNotificationStore.getState().pushToken;
+      useNotificationStore.getState().setPushToken(null);
+      useNotificationStore.getState().resetLocal();
+      useCartStore.getState().clearCart();
+      useWishlistStore.getState().clearWishlist();
+      useLocationStore.getState().reset();
+      queryClient.clear();
+      const { signOutOfGoogle } = await import('@/services/googleSignIn');
+      void signOutOfGoogle();
+      if (pushToken && previousToken) {
+        await notificationService.unregisterToken(pushToken, previousToken);
+      }
     } catch (error) {
-      console.warn('[useAuthStore] Failed to clear credentials:', error);
+      console.warn('[useAuthStore] Post-logout cleanup failed:', error);
     }
   },
 

@@ -10,8 +10,9 @@
  */
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -26,12 +27,10 @@ import {
 import { AppHeader } from '@/components/AppHeader';
 import { EmptyState } from '@/components/EmptyState';
 import { ProductCard } from '@/components/ProductCard';
-import { Product } from '@/data/products';
 import { productService } from '@/services/productService';
-import { useCartStore, useLanguageStore } from '@/store';
+import { useCartStore, useLanguageStore, useLocationStore } from '@/store';
 import { colors, fontSizes, spacing } from '@/theme';
 import { getDistanceKm } from '@/utils/distance';
-import { BUYER_LOCATION } from './(tabs)/index';
 
 type SortOption = 'distance' | 'price_asc' | 'price_desc' | 'rating';
 
@@ -46,16 +45,25 @@ export default function BuyerProductListingScreen() {
   }>();
 
   const { language } = useLanguageStore();
+  const { currentLocation } = useLocationStore();
   const { items, addItem, updateQuantity, getTotalCount } = useCartStore();
 
-  const [loading, setLoading] = useState(true);
-  const [products, setProducts] = useState<Product[]>([]);
-
   // Filter States initialized directly from route params
-  const [searchQuery, setSearchQuery] = useState(params.search || '');
   const [selectedCategory, setSelectedCategory] = useState<string>(
     params.category || 'all'
   );
+  const [prevCategoryParam, setPrevCategoryParam] = useState(params.category);
+  if (params.category !== prevCategoryParam) {
+    setPrevCategoryParam(params.category);
+    setSelectedCategory(params.category || 'all');
+  }
+
+  const [searchQuery, setSearchQuery] = useState(params.search || '');
+  const [prevSearchParam, setPrevSearchParam] = useState(params.search);
+  if (params.search !== prevSearchParam) {
+    setPrevSearchParam(params.search);
+    setSearchQuery(params.search || '');
+  }
   const [distanceFilter, setDistanceFilter] = useState<number | null>(
     params.maxDistance ? Number(params.maxDistance) : null
   );
@@ -77,41 +85,84 @@ export default function BuyerProductListingScreen() {
 
   const totalCartCount = getTotalCount();
 
-  useEffect(() => {
-    let isMounted = true;
-    async function loadData() {
-      try {
-        const data = await productService.getProducts();
-        if (isMounted) {
-          setProducts(data);
-        }
-      } catch (err) {
-        console.error('Failed to load products for listing:', err);
-      } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
-      }
-    }
-    loadData();
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  const {
+    data,
+    isLoading: loading,
+    isFetchingNextPage,
+    hasNextPage,
+    fetchNextPage,
+    refetch,
+    isRefetching,
+  } = useInfiniteQuery({
+    queryKey: [
+      'buyer-products-infinite',
+      selectedCategory,
+      searchQuery,
+      organicOnly,
+      distanceFilter,
+      sortBy,
+      inStockOnly,
+      currentLocation.lat,
+      currentLocation.lng,
+    ],
+    queryFn: ({ pageParam = 0 }) =>
+      productService.getProducts({
+        category: selectedCategory === 'all' ? undefined : selectedCategory,
+        searchQuery: searchQuery.trim() || undefined,
+        organicOnly: organicOnly || undefined,
+        inStock: inStockOnly || undefined,
+        maxDistanceKm: distanceFilter !== null ? distanceFilter : undefined,
+        sortBy: sortBy === 'rating' ? undefined : (sortBy as any),
+        userLat: currentLocation.lat,
+        userLng: currentLocation.lng,
+        limit: 20,
+        offset: pageParam,
+      }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => {
+      const nextOffset = lastPage.offset + lastPage.limit;
+      return nextOffset < lastPage.total ? nextOffset : undefined;
+    },
+  });
+
+  const products = useMemo(() => {
+    return data?.pages.flatMap((page) => page.items) ?? [];
+  }, [data]);
 
   // Compute products with distance and applied filters
   const filteredProducts = useMemo(() => {
     let list = products.map((p) => ({
       ...p,
-      distanceKm: getDistanceKm(BUYER_LOCATION.lat, BUYER_LOCATION.lng, p.lat, p.lng),
+      distanceKm: getDistanceKm(currentLocation.lat, currentLocation.lng, p.lat, p.lng),
     }));
 
     // Category Filter
     if (selectedCategory && selectedCategory !== 'all') {
-      if (selectedCategory === 'grains') {
+      const sel = selectedCategory.toLowerCase();
+      if (sel === 'grains' || sel === 'grains_millets') {
         list = list.filter((p) => p.category === 'grains' || p.category === 'millets');
+      } else if (sel === 'millets') {
+        list = list.filter((p) => p.category === 'millets' || p.category === 'grains');
+      } else if (sel === 'manure' || sel === 'organic_manure') {
+        list = list.filter((p) => p.category === 'manure');
+      } else if (sel === 'fodder') {
+        list = list.filter((p) => p.category === 'fodder');
+      } else if (sel === 'vegetables' || sel === 'vegetable') {
+        list = list.filter((p) => p.category === 'vegetables');
+      } else if (sel === 'fruits' || sel === 'fruit') {
+        list = list.filter((p) => p.category === 'fruits');
+      } else if (sel === 'pulses' || sel === 'pulse') {
+        list = list.filter((p) => p.category === 'pulses');
+      } else if (sel === 'spices' || sel === 'spice') {
+        list = list.filter((p) => p.category === 'spices');
+      } else if (sel === 'dairy') {
+        list = list.filter((p) => p.category === 'dairy');
+      } else if (sel === 'seeds' || sel === 'seed') {
+        list = list.filter((p) => p.category === 'seeds');
+      } else if (sel === 'tools' || sel === 'tool') {
+        list = list.filter((p) => p.category === 'tools');
       } else {
-        list = list.filter((p) => p.category === selectedCategory);
+        list = list.filter((p) => p.category === selectedCategory || p.category.includes(selectedCategory));
       }
     }
 
@@ -171,6 +222,8 @@ export default function BuyerProductListingScreen() {
     return list;
   }, [
     products,
+    currentLocation.lat,
+    currentLocation.lng,
     selectedCategory,
     searchQuery,
     distanceFilter,
@@ -217,18 +270,53 @@ export default function BuyerProductListingScreen() {
     }
   };
 
+  const getCategoryTitle = (cat: string) => {
+    switch (cat.toLowerCase()) {
+      case 'grains':
+      case 'grains_millets':
+        return language === 'ta' ? 'தானியங்கள் (நெல் & அரிசி)' : 'Grains & Millets';
+      case 'millets':
+        return language === 'ta' ? 'சிறுதானியங்கள் (கேழ்வரகு)' : 'Millets & Ragi';
+      case 'manure':
+      case 'organic_manure':
+        return language === 'ta' ? 'இயற்கை உரம் (மாட்டு எரு)' : 'Organic Manure';
+      case 'fodder':
+        return language === 'ta' ? 'தீவனம் (வைக்கோல், புல்)' : 'Fodder & Hay';
+      case 'vegetables':
+      case 'vegetable':
+        return language === 'ta' ? 'நாட்டு காய்கறிகள்' : 'Fresh Vegetables';
+      case 'fruits':
+      case 'fruit':
+        return language === 'ta' ? 'பழ வகைகள்' : 'Farm Fruits';
+      case 'pulses':
+      case 'pulse':
+        return language === 'ta' ? 'பருப்பு வகைகள்' : 'Desi Pulses & Dals';
+      case 'spices':
+      case 'spice':
+        return language === 'ta' ? 'மஞ்சள் & மசாலா' : 'Spices & Turmeric';
+      case 'dairy':
+        return language === 'ta' ? 'நாட்டு மாட்டு பால் & நெய்' : 'Desi Cow Dairy';
+      case 'seeds':
+      case 'seed':
+        return language === 'ta' ? 'நாட்டு விதைகள்' : 'Native Seeds';
+      case 'tools':
+      case 'tool':
+        return language === 'ta' ? 'விவசாய கருவிகள்' : 'Hand Tools';
+      default:
+        return cat.toUpperCase();
+    }
+  };
+
   return (
     <View style={styles.screen}>
       {/* AppHeader with Back button */}
       <AppHeader
         showBack={true}
         title={
-          params.categoryTitle ||
-          (selectedCategory !== 'all'
-            ? selectedCategory.toUpperCase()
-            : language === 'ta'
-            ? 'விளைபொருட்கள்'
-            : 'All Produce')
+          selectedCategory !== 'all'
+            ? getCategoryTitle(selectedCategory)
+            : params.categoryTitle ||
+              (language === 'ta' ? 'விளைபொருட்கள்' : 'All Produce')
         }
         cartCount={totalCartCount}
         onSearchPress={() => {}}
@@ -422,6 +510,21 @@ export default function BuyerProductListingScreen() {
           columnWrapperStyle={styles.columnWrapper}
           contentContainerStyle={styles.listContainer}
           showsVerticalScrollIndicator={false}
+          onEndReached={() => {
+            if (hasNextPage && !isFetchingNextPage) {
+              fetchNextPage();
+            }
+          }}
+          onEndReachedThreshold={0.4}
+          refreshing={isRefetching}
+          onRefresh={refetch}
+          ListFooterComponent={
+            isFetchingNextPage ? (
+              <View style={{ paddingVertical: spacing.md, alignItems: 'center' }}>
+                <ActivityIndicator size="small" color={colors.primary} />
+              </View>
+            ) : undefined
+          }
           renderItem={({ item }) => {
             const qty = getItemCartQty(item.id);
             return (

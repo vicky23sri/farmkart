@@ -10,7 +10,7 @@ Follow these exact steps in your terminal to set up and start the server:
 
 ### 1. Navigate to the project directory
 ```bash
-cd /home/vignesh/farmkart/farmkart-api
+cd farmkart-api
 ```
 
 ### 2. Create and activate a Python virtual environment
@@ -26,16 +26,16 @@ pip install -r requirements.txt
 ```
 
 ### 4. Configure your `.env` file
-The `.env` file is already pre-configured for your local PostgreSQL database:
+The `.env` file can be configured based on `.env.example`:
 ```env
 DB_HOST=localhost
 DB_PORT=5432
-DB_USER=virat
-DB_PASSWORD=virat
+DB_USER=your_db_user
+DB_PASSWORD=your_db_password
 DB_NAME=farmkart
 DB_SSLMODE=disable
 
-JWT_SECRET=farmkart_super_secret_jwt_key_2026_xyz123
+JWT_SECRET=change_me_run_openssl_rand_hex_32
 JWT_EXPIRE_MINUTES=10080
 
 FREE_DELIVERY_RADIUS_KM=50

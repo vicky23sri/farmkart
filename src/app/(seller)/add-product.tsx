@@ -18,6 +18,7 @@
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import { useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import React, { useState } from 'react';
 import {
@@ -36,12 +37,8 @@ import {
 import { AppHeader } from '@/components/AppHeader';
 import { Card } from '@/components/Card';
 import { PrimaryButton } from '@/components/PrimaryButton';
-import {
-  SellerCropCategory,
-  SellerCropUnit,
-  useLanguageStore,
-  useSellerProductStore,
-} from '@/store';
+import { productService } from '@/services/productService';
+import { SellerCropCategory, SellerCropUnit, useLanguageStore } from '@/store';
 import { colors, fontSizes, spacing } from '@/theme';
 
 interface CategoryOption {
@@ -112,7 +109,7 @@ const RADIUS_STEPS = [10, 20, 30, 40, 50];
 
 export default function AddProductScreen() {
   const { language } = useLanguageStore();
-  const { addProduct } = useSellerProductStore();
+  const queryClient = useQueryClient();
 
   // Core product states
   const [photos, setPhotos] = useState<string[]>([]);
@@ -202,16 +199,16 @@ export default function AddProductScreen() {
   };
 
   // Submit listing
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!cropName.trim()) {
       Alert.alert('Crop Name Required', 'Please enter crop name in English or Tamil.');
       return;
     }
-    if (!price.trim() || isNaN(Number(price))) {
+    if (!price.trim() || !(Number(price) > 0)) {
       Alert.alert('Valid Price Required', 'Please enter a valid price per unit.');
       return;
     }
-    if (!quantity.trim() || isNaN(Number(quantity))) {
+    if (!quantity.trim() || !(Number(quantity) >= 0)) {
       Alert.alert('Available Quantity Required', 'Please enter available harvest quantity.');
       return;
     }
@@ -220,55 +217,68 @@ export default function AddProductScreen() {
 
     const categoryObj = CATEGORY_OPTIONS.find((c) => c.id === category);
 
-    // Default farm photo if farmer didn't upload
-    const finalPhotos =
-      photos.length > 0
-        ? photos
-        : category === 'organic_manure'
-        ? ['https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=600']
-        : category === 'fodder'
-        ? ['https://images.unsplash.com/photo-1500382017468-9049fed747ef?w=600']
-        : category === 'grains_millets'
-        ? ['https://images.unsplash.com/photo-1586201375761-83865001e31c?w=600']
-        : ['https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=600'];
+    if (photos.length === 0) {
+      setLoading(false);
+      Alert.alert(
+        language === 'ta' ? 'புகைப்படம் தேவை' : 'Photo Required',
+        language === 'ta'
+          ? 'வாங்குபவர்கள் நம்பிக்கையுடன் வாங்க உங்கள் விளைபொருளின் குறைந்தது ஒரு புகைப்படத்தைச் சேர்க்கவும்.'
+          : 'Please add at least one real photo of your produce so buyers can see what they are ordering.'
+      );
+      return;
+    }
 
-    setTimeout(() => {
-      addProduct({
+    try {
+      // 1. Upload photos (local camera/gallery files) and collect their public URLs
+      const uploadedPhotos: string[] = [];
+      for (const uri of photos) {
+        uploadedPhotos.push(uri.startsWith('http') ? uri : await productService.uploadImage({ uri }));
+      }
+
+      // 2. Create the listing. Location defaults to the farmer's profile location on the server.
+      await productService.createProduct({
         name: cropName.trim(),
-        nameTamil: tamilName.trim() || cropName.trim(),
-        category,
-        categoryLabel: categoryObj?.labelEn || 'Farm Harvest',
+        name_tamil: tamilName.trim() || cropName.trim(),
+        category: categoryObj?.labelEn || category,
         price: Number(price),
         unit,
         stock: Number(quantity),
-        minOrder: Number(minOrder) || 1,
-        harvestDate: harvestDate.trim() || 'Today',
-        isOrganic,
-        isActive: true,
-        photos: finalPhotos,
-        vehicleType,
-        deliveryRadiusKm: Math.min(50, deliveryRadiusKm),
-        compostingAge: category === 'organic_manure' ? compostingAge : undefined,
-        moisture:
+        min_order: Number(minOrder) || 1,
+        harvest_date: harvestDate.trim() || undefined,
+        is_organic: isOrganic,
+        images: uploadedPhotos,
+        delivery_radius_km: Math.min(50, deliveryRadiusKm),
+        vehicle_type: vehicleType,
+        composting_age: category === 'organic_manure' ? compostingAge : undefined,
+        moisture_content:
           category === 'fodder' || category === 'grains_millets' ? moisture : undefined,
         variety: category === 'grains_millets' ? variety : undefined,
       });
-
+    } catch (apiErr: any) {
       setLoading(false);
-
       Alert.alert(
-        language === 'ta' ? 'பட்டியலிடப்பட்டது!' : 'Harvest Published!',
-        language === 'ta'
-          ? `${cropName} உங்கள் பண்ணை சந்தையில் நேரடியாக பட்டியலிடப்பட்டது.`
-          : `${cropName} is now live and discoverable by local buyers within ${deliveryRadiusKm} km!`,
-        [
-          {
-            text: 'OK',
-            onPress: () => router.back(),
-          },
-        ]
+        language === 'ta' ? 'பட்டியலிட முடியவில்லை' : 'Could not publish',
+        apiErr?.message || 'Please check your connection and try again.'
       );
-    }, 600);
+      return;
+    }
+
+    queryClient.invalidateQueries({ queryKey: ['seller-my-products-infinite'] });
+    queryClient.invalidateQueries({ queryKey: ['seller-products-dashboard'] });
+    setLoading(false);
+
+    Alert.alert(
+      language === 'ta' ? 'பட்டியலிடப்பட்டது!' : 'Harvest Published!',
+      language === 'ta'
+        ? `${cropName} உங்கள் பண்ணை சந்தையில் நேரடியாக பட்டியலிடப்பட்டது.`
+        : `${cropName} is now live and discoverable by local buyers within ${deliveryRadiusKm} km!`,
+      [
+        {
+          text: 'OK',
+          onPress: () => router.back(),
+        },
+      ]
+    );
   };
 
   return (
