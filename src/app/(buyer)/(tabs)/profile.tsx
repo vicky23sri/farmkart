@@ -7,7 +7,7 @@
  * - Saved Addresses management with useLocationStore (active selection, add address modal, delete)
  * - Payment Methods (Saved UPI IDs, Saved RuPay/Visa Cards, COD preference, Add Payment modal)
  * - Language Switch (English / Tamil live toggle with useLanguageStore)
- * - Help & Support (24x7 Kisan Call Centre 1800-425-1555, WhatsApp Mandi Support, Expandable FAQs)
+ * - Help & Support (24x7 Kisan Call Centre 1800-180-1551, WhatsApp Mandi Support, Expandable FAQs)
  * - Quick shortcuts to Wishlist and My Orders
  * - Switch to Seller / Farmer mode
  * - Logout confirmation with useAuthStore
@@ -23,7 +23,6 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   View,
@@ -31,72 +30,68 @@ import {
 
 import { AppHeader } from '@/components/AppHeader';
 import { Card } from '@/components/Card';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+
+import { authService } from '@/services/authService';
+import { orderService } from '@/services/orderService';
 import {
   BuyerLocation,
   useAuthStore,
   useCartStore,
   useLanguageStore,
   useLocationStore,
-  useOrderStore,
   useWishlistStore,
 } from '@/store';
 import { colors, fontSizes, spacing } from '@/theme';
-
-interface SavedPaymentMethod {
-  id: string;
-  type: 'upi' | 'card';
-  title: string;
-  subtitle: string;
-  icon: string;
-  isDefault?: boolean;
-}
-
-const INITIAL_PAYMENT_METHODS: SavedPaymentMethod[] = [
-  {
-    id: 'pay-1',
-    type: 'upi',
-    title: 'Google Pay UPI',
-    subtitle: 'karthik.v@okhdfcbank',
-    icon: 'google',
-    isDefault: true,
-  },
-  {
-    id: 'pay-2',
-    type: 'upi',
-    title: 'PhonePe UPI',
-    subtitle: '9876543210@ybl',
-    icon: 'cellphone-wireless',
-  },
-  {
-    id: 'pay-3',
-    type: 'card',
-    title: 'HDFC Bank RuPay Debit',
-    subtitle: '•••• 4129 (Exp 08/29)',
-    icon: 'credit-card',
-  },
-  {
-    id: 'pay-4',
-    type: 'card',
-    title: 'SBI Kisan Credit Card',
-    subtitle: '•••• 8821 (Exp 12/28)',
-    icon: 'credit-card-outline',
-  },
-];
 
 export default function BuyerProfileScreen() {
   const { logout } = useAuthStore();
   const { language, setLanguage } = useLanguageStore();
   const { currentLocation, savedAddresses, setLocation, addSavedAddress, removeSavedAddress } =
     useLocationStore();
-  const { orders } = useOrderStore();
   const { items: wishlistItems } = useWishlistStore();
   const { getTotalCount } = useCartStore();
+  const queryClient = useQueryClient();
+
+  // Real profile & order count from the API
+  const { data: profile } = useQuery({ queryKey: ['me'], queryFn: () => authService.getProfile() });
+  const { data: ordersPage } = useQuery({
+    queryKey: ['orders-mine', 'all', 1, 0],
+    queryFn: () => orderService.getMyOrders('all', 1, 0),
+  });
+  const ordersCount = ordersPage?.total ?? 0;
 
   // Profile Edit State
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
-  const [userName, setUserName] = useState('Karthik V.');
-  const [userPhone, setUserPhone] = useState('+91 98765 43210');
-  const [userEmail, setUserEmail] = useState('karthik.v@tamilagri.in');
+  const [editName, setEditName] = useState('');
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const userName = profile?.name || (language === 'ta' ? 'வாங்குபவர்' : 'FarmKart Buyer');
+  const userPhone = profile?.mobile ? `+91 ${profile.mobile}` : '';
+  const userEmail = profile?.email || '';
+
+  const openEditProfile = () => {
+    setEditName(profile?.name || '');
+    setIsEditProfileOpen(true);
+  };
+
+  const handleSaveProfile = async () => {
+    const name = editName.trim();
+    if (name.length < 1) {
+      Alert.alert('Name required', 'Please enter your name.');
+      return;
+    }
+    setIsSavingProfile(true);
+    try {
+      const updated = await authService.updateProfile({ name });
+      queryClient.setQueryData(['me'], updated);
+      setIsEditProfileOpen(false);
+      Alert.alert('Profile Updated', 'Your profile details have been saved.');
+    } catch (err: any) {
+      Alert.alert('Could not save', err?.message || 'Please try again.');
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
 
   // Address Modal State
   const [isAddAddressOpen, setIsAddAddressOpen] = useState(false);
@@ -105,14 +100,6 @@ export default function BuyerProfileScreen() {
   const [newAddrArea, setNewAddrArea] = useState('');
   const [newAddrCity, setNewAddrCity] = useState('Madurai');
   const [newAddrPincode, setNewAddrPincode] = useState('625001');
-
-  // Payment State
-  const [paymentMethods, setPaymentMethods] = useState<SavedPaymentMethod[]>(INITIAL_PAYMENT_METHODS);
-  const [isAddPaymentOpen, setIsAddPaymentOpen] = useState(false);
-  const [newPayType, setNewPayType] = useState<'upi' | 'card'>('upi');
-  const [newPayTitle, setNewPayTitle] = useState('');
-  const [newPayValue, setNewPayValue] = useState('');
-  const [codDefaultEnabled, setCodDefaultEnabled] = useState(false);
 
   // FAQ Accordion State
   const [expandedFaq, setExpandedFaq] = useState<number | null>(null);
@@ -174,37 +161,9 @@ export default function BuyerProfileScreen() {
   };
 
   // Add Payment Handler
-  const handleSavePayment = () => {
-    if (!newPayTitle.trim() || !newPayValue.trim()) {
-      Alert.alert(
-        language === 'ta' ? 'தகவல் தேவை' : 'Details Required',
-        language === 'ta' ? 'பெயர் மற்றும் விவரங்களை உள்ளிடவும்.' : 'Please enter name and UPI ID or card details.'
-      );
-      return;
-    }
-
-    const newMethod: SavedPaymentMethod = {
-      id: `pay-${Date.now()}`,
-      type: newPayType,
-      title: newPayTitle.trim(),
-      subtitle: newPayValue.trim(),
-      icon: newPayType === 'upi' ? 'cellphone-wireless' : 'credit-card',
-    };
-
-    setPaymentMethods((prev) => [newMethod, ...prev]);
-    setIsAddPaymentOpen(false);
-    setNewPayTitle('');
-    setNewPayValue('');
-
-    Alert.alert(
-      language === 'ta' ? 'சேர்க்கப்பட்டது' : 'Payment Method Added',
-      language === 'ta' ? 'புதிய கட்டண முறை சேர்க்கப்பட்டது.' : 'Your payment method has been saved.'
-    );
-  };
-
   // Call Kisan Helpline
   const handleCallHelpline = () => {
-    const phoneNumber = 'tel:18004251555';
+    const phoneNumber = 'tel:18001801551';
     Linking.canOpenURL(phoneNumber)
       .then((supported) => {
         if (supported) {
@@ -212,14 +171,14 @@ export default function BuyerProfileScreen() {
         } else {
           Alert.alert(
             'Kisan Call Centre Hotline',
-            'Toll-Free Agricultural Support:\n1800-425-1555\n(Available 6 AM - 10 PM daily in Tamil)'
+            'Toll-Free Kisan Call Centre:\n1800-180-1551'
           );
         }
       })
       .catch(() => {
         Alert.alert(
           'Kisan Call Centre Hotline',
-          'Toll-Free Support: 1800-425-1555 (All Tamil Nadu Farming Districts)'
+          'Toll-Free Kisan Call Centre: 1800-180-1551'
         );
       });
   };
@@ -239,6 +198,37 @@ export default function BuyerProfileScreen() {
           onPress: async () => {
             await logout();
             router.replace('/(auth)/login');
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      language === 'ta' ? 'கணக்கை நீக்கவா?' : 'Delete My Account?',
+      language === 'ta'
+        ? 'இந்த நடவடிக்கை மாற்ற முடியாதது. உங்கள் பெயர், தொலைபேசி எண், முகவரிகள் அனைத்தும் நிரந்தரமாக அழிக்கப்படும் அல்லது பெயரற்றதாக்கப்படும். கணக்கியல் பதிவுகளுக்காக முந்தைய ஆர்டர் வரலாறுகள் பெயரற்றதாக பாதுகாக்கப்படும். நிச்சயமாக உங்கள் கணக்கை நீக்க விரும்புகிறீர்களா?'
+        : 'This action cannot be undone. All your personal profile details, phone number, and delivery addresses will be permanently deleted or anonymized. Past order records are retained anonymously for accounting. Are you sure you want to delete your account?',
+      [
+        { text: language === 'ta' ? 'ரத்து' : 'Cancel', style: 'cancel' },
+        {
+          text: language === 'ta' ? 'ஆம், நீக்கு' : 'Yes, Delete Account',
+          style: 'destructive',
+          onPress: async () => {
+            const res = await authService.deleteAccount();
+            if (res.success) {
+              await logout();
+              Alert.alert(
+                language === 'ta' ? 'கணக்கு நீக்கப்பட்டது' : 'Account Deleted',
+                language === 'ta'
+                  ? 'உங்கள் கணக்கு வெற்றிகரமாக நீக்கப்பட்டது.'
+                  : 'Your account has been permanently deleted.'
+              );
+              router.replace('/(auth)/login');
+            } else {
+              Alert.alert('Error', res.message);
+            }
           },
         },
       ]
@@ -298,7 +288,7 @@ export default function BuyerProfileScreen() {
               </Text>
               <Pressable
                 style={styles.avatarEditBadge}
-                onPress={() => setIsEditProfileOpen(true)}>
+                onPress={openEditProfile}>
                 <MaterialCommunityIcons name="pencil" size={12} color={colors.white} />
               </Pressable>
             </View>
@@ -306,7 +296,7 @@ export default function BuyerProfileScreen() {
             <View style={styles.userInfoCol}>
               <View style={styles.userNameRow}>
                 <Text style={styles.userName}>{userName}</Text>
-                <Pressable onPress={() => setIsEditProfileOpen(true)} hitSlop={6}>
+                <Pressable onPress={openEditProfile} hitSlop={6}>
                   <Text style={styles.editBtnText}>
                     {language === 'ta' ? 'திருத்து' : 'Edit'}
                   </Text>
@@ -333,7 +323,7 @@ export default function BuyerProfileScreen() {
             <Pressable
               style={styles.statBox}
               onPress={() => router.push('/(buyer)/(tabs)/orders')}>
-              <Text style={styles.statValue}>{orders.length}</Text>
+              <Text style={styles.statValue}>{ordersCount}</Text>
               <Text style={styles.statLabel}>
                 {language === 'ta' ? 'ஆர்டர்கள்' : 'Orders'}
               </Text>
@@ -473,81 +463,16 @@ export default function BuyerProfileScreen() {
           </View>
         </Card>
 
-        {/* 2. Payment Methods */}
+        {/* 2. Payment options */}
         <Card style={styles.sectionCard}>
-          <View style={styles.sectionHeaderRow}>
-            <View style={styles.sectionTitleGroup}>
-              <View style={[styles.sectionIconBg, { backgroundColor: '#FFF3E0' }]}>
-                <MaterialCommunityIcons
-                  name="credit-card-settings-outline"
-                  size={18}
-                  color={colors.accent}
-                />
-              </View>
-              <Text style={styles.sectionTitle}>
-                {language === 'ta' ? 'கட்டண முறைகள்' : 'Payment Methods'}
-              </Text>
-            </View>
-
-            <Pressable
-              onPress={() => setIsAddPaymentOpen(true)}
-              style={styles.actionPillBtn}>
-              <MaterialCommunityIcons name="plus" size={14} color={colors.primaryDark} />
-              <Text style={styles.actionPillBtnText}>
-                {language === 'ta' ? 'சேர்' : 'Add'}
-              </Text>
-            </Pressable>
-          </View>
-
-          {/* COD Default Switch */}
-          <View style={styles.codSettingRow}>
-            <View style={styles.codSettingTextCol}>
-              <Text style={styles.codSettingTitle}>
-                {language === 'ta'
-                  ? 'பொருளைப் பெற்றவுடன் ரொக்கம் (COD)'
-                  : 'Cash on Delivery (COD)'}
-              </Text>
-              <Text style={styles.codSettingDesc}>
-                {language === 'ta'
-                  ? 'விளைபொருள் வரும்போது பணம் செலுத்த முன்னுரிமை'
-                  : 'Prefer paying cash to the driver upon delivery'}
-              </Text>
-            </View>
-            <Switch
-              value={codDefaultEnabled}
-              onValueChange={setCodDefaultEnabled}
-              trackColor={{ false: '#E0E0E0', true: colors.primaryLight }}
-              thumbColor={codDefaultEnabled ? colors.primary : '#F5F5F5'}
-            />
-          </View>
-
-          <View style={styles.divider} />
-
-          {/* Saved UPI & Cards */}
-          <View style={styles.paymentMethodsList}>
-            {paymentMethods.map((pm) => (
-              <View key={pm.id} style={styles.paymentItem}>
-                <View style={styles.paymentIconCircle}>
-                  <MaterialCommunityIcons
-                    name={pm.icon as any}
-                    size={20}
-                    color={colors.primaryDark}
-                  />
-                </View>
-                <View style={styles.paymentTextCol}>
-                  <View style={styles.paymentTitleRow}>
-                    <Text style={styles.paymentTitle}>{pm.title}</Text>
-                    {pm.isDefault && (
-                      <View style={styles.defaultPill}>
-                        <Text style={styles.defaultPillText}>DEFAULT</Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text style={styles.paymentSubtitle}>{pm.subtitle}</Text>
-                </View>
-              </View>
-            ))}
-          </View>
+          <Text style={styles.sectionTitle}>
+            {language === 'ta' ? 'கட்டண முறைகள்' : 'How you pay'}
+          </Text>
+          <Text style={styles.userEmail}>
+            {language === 'ta'
+              ? 'UPI மூலம் நேரடியாக விவசாயிக்கு அல்லது பொருள் வந்தவுடன் பணமாக செலுத்தலாம். FarmKart உங்கள் அட்டை விவரங்களை சேமிப்பதில்லை.'
+              : 'Pay the farmer directly by UPI, or in cash on delivery. FarmKart never stores card or bank details.'}
+          </Text>
         </Card>
 
         {/* 3. Language Switch (English / Tamil) */}
@@ -638,7 +563,7 @@ export default function BuyerProfileScreen() {
                   ? 'கிசான் உதவி மையம் (Kisan Helpline)'
                   : '24x7 Kisan Call Centre'}
               </Text>
-              <Text style={styles.helplinePhone}>Toll-Free: 1800-425-1555</Text>
+              <Text style={styles.helplinePhone}>Toll-Free: 1800-180-1551</Text>
               <Text style={styles.helplineSubtitle}>
                 {language === 'ta'
                   ? 'தமிழ்நாடு வேளாண்மை & மண்டி ஆதரவு'
@@ -703,12 +628,61 @@ export default function BuyerProfileScreen() {
           </Pressable>
         </Card>
 
+        {/* Legal & Policies Card */}
+        <Card style={styles.legalMenuCard}>
+          <Pressable
+            style={styles.legalMenuItem}
+            onPress={() => router.push('/privacy')}>
+            <View style={[styles.sectionIconBg, { backgroundColor: '#E8F5E9' }]}>
+              <MaterialCommunityIcons name="shield-lock-outline" size={20} color={colors.primaryDark} />
+            </View>
+            <View style={styles.legalTextCol}>
+              <Text style={styles.legalItemTitle}>
+                {language === 'ta' ? 'தனியுரிமைக் கொள்கை' : 'Privacy Policy'}
+              </Text>
+              <Text style={styles.legalItemSubtitle}>
+                {language === 'ta' ? 'தரவு பயன்பாடு & பாதுகாப்பு' : 'Data protection & privacy rights'}
+              </Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={20} color={colors.textSecondary} />
+          </Pressable>
+
+          <View style={styles.legalMenuDivider} />
+
+          <Pressable
+            style={styles.legalMenuItem}
+            onPress={() => router.push('/terms')}>
+            <View style={[styles.sectionIconBg, { backgroundColor: '#FFF3E0' }]}>
+              <MaterialCommunityIcons name="file-document-outline" size={20} color={colors.accent} />
+            </View>
+            <View style={styles.legalTextCol}>
+              <Text style={styles.legalItemTitle}>
+                {language === 'ta' ? 'விதிமுறைகள் & நிபந்தனைகள்' : 'Terms of Service'}
+              </Text>
+              <Text style={styles.legalItemSubtitle}>
+                {language === 'ta' ? 'பயன்பாட்டு விதிகள் மற்றும் கொள்கை' : 'Marketplace rules & fulfillment'}
+              </Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={20} color={colors.textSecondary} />
+          </Pressable>
+        </Card>
+
         {/* Logout Button */}
         <Card style={styles.logoutCard}>
           <Pressable style={styles.logoutBtn} onPress={handleLogout}>
             <MaterialCommunityIcons name="logout" size={20} color={colors.error} />
             <Text style={styles.logoutBtnText}>
               {language === 'ta' ? 'கணக்கிலிருந்து வெளியேறு' : 'Logout of FarmKart'}
+            </Text>
+          </Pressable>
+        </Card>
+
+        {/* Delete My Account Option */}
+        <Card style={styles.deleteCard}>
+          <Pressable style={styles.deleteBtn} onPress={handleDeleteAccount}>
+            <MaterialCommunityIcons name="trash-can-outline" size={20} color="#C62828" />
+            <Text style={styles.deleteBtnText}>
+              {language === 'ta' ? 'என் கணக்கை நிரந்தரமாக நீக்கு' : 'Delete My Account'}
             </Text>
           </Pressable>
         </Card>
@@ -731,28 +705,25 @@ export default function BuyerProfileScreen() {
             <Text style={styles.modalInputLabel}>Full Name</Text>
             <TextInput
               style={styles.modalInput}
-              value={userName}
-              onChangeText={setUserName}
+              value={editName}
+              onChangeText={setEditName}
               placeholder="Enter your name"
+              maxLength={100}
             />
 
-            <Text style={styles.modalInputLabel}>Phone Number</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={userPhone}
-              onChangeText={setUserPhone}
-              keyboardType="phone-pad"
-              placeholder="+91 Phone number"
-            />
+            {userPhone ? (
+              <>
+                <Text style={styles.modalInputLabel}>Phone Number</Text>
+                <TextInput style={[styles.modalInput, { opacity: 0.6 }]} value={userPhone} editable={false} />
+              </>
+            ) : null}
 
-            <Text style={styles.modalInputLabel}>Email Address</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={userEmail}
-              onChangeText={setUserEmail}
-              keyboardType="email-address"
-              placeholder="Email address"
-            />
+            {userEmail ? (
+              <>
+                <Text style={styles.modalInputLabel}>Email Address</Text>
+                <TextInput style={[styles.modalInput, { opacity: 0.6 }]} value={userEmail} editable={false} />
+              </>
+            ) : null}
 
             <View style={styles.modalBtnRow}>
               <Pressable
@@ -761,12 +732,10 @@ export default function BuyerProfileScreen() {
                 <Text style={styles.modalCancelBtnText}>Cancel</Text>
               </Pressable>
               <Pressable
-                style={styles.modalSaveBtn}
-                onPress={() => {
-                  setIsEditProfileOpen(false);
-                  Alert.alert('Profile Updated', 'Your profile details have been saved.');
-                }}>
-                <Text style={styles.modalSaveBtnText}>Save Changes</Text>
+                style={[styles.modalSaveBtn, isSavingProfile && { opacity: 0.6 }]}
+                disabled={isSavingProfile}
+                onPress={handleSaveProfile}>
+                <Text style={styles.modalSaveBtnText}>{isSavingProfile ? 'Saving…' : 'Save Changes'}</Text>
               </Pressable>
             </View>
           </Pressable>
@@ -857,85 +826,6 @@ export default function BuyerProfileScreen() {
         </Pressable>
       </Modal>
 
-      {/* Add Payment Modal */}
-      <Modal
-        visible={isAddPaymentOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setIsAddPaymentOpen(false)}>
-        <Pressable
-          style={styles.modalOverlay}
-          onPress={() => setIsAddPaymentOpen(false)}>
-          <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.modalTitle}>
-              {language === 'ta' ? 'கட்டண முறை சேர்க்க' : 'Add Payment Method'}
-            </Text>
-
-            <View style={styles.labelPickerRow}>
-              <Pressable
-                onPress={() => setNewPayType('upi')}
-                style={[
-                  styles.labelPickerChip,
-                  newPayType === 'upi' && styles.labelPickerChipActive,
-                ]}>
-                <Text
-                  style={[
-                    styles.labelPickerChipText,
-                    newPayType === 'upi' && styles.labelPickerChipTextActive,
-                  ]}>
-                  UPI ID (VPA)
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setNewPayType('card')}
-                style={[
-                  styles.labelPickerChip,
-                  newPayType === 'card' && styles.labelPickerChipActive,
-                ]}>
-                <Text
-                  style={[
-                    styles.labelPickerChipText,
-                    newPayType === 'card' && styles.labelPickerChipTextActive,
-                  ]}>
-                  Debit / Kisan Card
-                </Text>
-              </Pressable>
-            </View>
-
-            <Text style={styles.modalInputLabel}>
-              {newPayType === 'upi' ? 'App / Bank Name' : 'Cardholder Name'}
-            </Text>
-            <TextInput
-              style={styles.modalInput}
-              value={newPayTitle}
-              onChangeText={setNewPayTitle}
-              placeholder={newPayType === 'upi' ? 'e.g. BHIM UPI / Paytm' : 'e.g. Karthik V'}
-            />
-
-            <Text style={styles.modalInputLabel}>
-              {newPayType === 'upi' ? 'UPI ID' : 'Card Number'}
-            </Text>
-            <TextInput
-              style={styles.modalInput}
-              value={newPayValue}
-              onChangeText={setNewPayValue}
-              placeholder={newPayType === 'upi' ? 'e.g. username@bank' : '16-digit card number'}
-              keyboardType={newPayType === 'upi' ? 'email-address' : 'numeric'}
-            />
-
-            <View style={styles.modalBtnRow}>
-              <Pressable
-                style={styles.modalCancelBtn}
-                onPress={() => setIsAddPaymentOpen(false)}>
-                <Text style={styles.modalCancelBtnText}>Cancel</Text>
-              </Pressable>
-              <Pressable style={styles.modalSaveBtn} onPress={handleSavePayment}>
-                <Text style={styles.modalSaveBtnText}>Save Payment</Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </View>
   );
 }
@@ -1397,6 +1287,56 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.sm + 1,
     fontWeight: '700',
     color: colors.error,
+  },
+  legalMenuCard: {
+    padding: 0,
+    overflow: 'hidden',
+    marginTop: spacing.xs,
+  },
+  legalMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  legalTextCol: {
+    flex: 1,
+  },
+  legalItemTitle: {
+    fontSize: fontSizes.sm,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  legalItemSubtitle: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  legalMenuDivider: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginHorizontal: spacing.md,
+  },
+  deleteCard: {
+    padding: 0,
+    overflow: 'hidden',
+    marginTop: spacing.xs,
+    marginBottom: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(211, 47, 47, 0.2)',
+  },
+  deleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.md,
+    gap: spacing.xs,
+    backgroundColor: '#FFF5F5',
+  },
+  deleteBtnText: {
+    fontSize: fontSizes.sm,
+    fontWeight: '700',
+    color: '#C62828',
   },
   modalOverlay: {
     flex: 1,

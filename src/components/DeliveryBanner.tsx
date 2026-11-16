@@ -36,7 +36,8 @@ export function DeliveryBanner({
   deliveryTime,
   style,
 }: DeliveryBannerProps) {
-  const isWithinFreeRadius = distanceKm <= maxDeliverableKm;
+  const hasDistance = Number.isFinite(distanceKm);
+  const isWithinFreeRadius = !hasDistance || distanceKm <= maxDeliverableKm;
 
   return (
     <View
@@ -66,9 +67,11 @@ export function DeliveryBanner({
               styles.statusTitle,
               { color: isWithinFreeRadius ? colors.primaryDark : '#92400E' },
             ]}>
-            {isWithinFreeRadius
+            {!hasDistance
+              ? 'Delivery distance will be confirmed by the farmer'
+              : isWithinFreeRadius
               ? `Deliverable, ${distanceKm.toFixed(0)} km away`
-              : `${distanceKm.toFixed(0)} km away. Beyond our usual 50 km range.`}
+              : `${distanceKm.toFixed(0)} km away. Beyond our usual ${maxDeliverableKm} km range.`}
           </Text>
         </View>
 

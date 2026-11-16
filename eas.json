@@ -6,7 +6,10 @@
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "APP_ENV": "development"
+      }
     },
     "preview": {
       "distribution": "internal",
@@ -14,10 +17,20 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://37cf-117-222-152-64.ngrok-free.app"
+        "APP_ENV": "preview",
+        "EXPO_PUBLIC_API_URL": "http://172.16.16.95:8001"
       }
     },
-    "production": {}
+    "production": {
+      "autoIncrement": true,
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "APP_ENV": "production"
+      },
+      "environment": "production"
+    }
   },
   "submit": {
     "production": {}

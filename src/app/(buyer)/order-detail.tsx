@@ -15,11 +15,14 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
+  Linking,
   Modal,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   View,
@@ -29,28 +32,39 @@ import { AppHeader } from '@/components/AppHeader';
 import { Card } from '@/components/Card';
 import { PrimaryButton } from '@/components/PrimaryButton';
 import { StatusChip } from '@/components/StatusChip';
-import { useLanguageStore, useOrderStore } from '@/store';
+import { useOrder } from '@/services/orderService';
+import { useLanguageStore } from '@/store';
 import { colors, fontSizes, spacing } from '@/theme';
 
 export default function BuyerOrderDetailScreen() {
   const { id } = useLocalSearchParams<{ id?: string }>();
   const { language } = useLanguageStore();
-  const { getOrderById, orders } = useOrderStore();
-
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
 
-  // Fetch target order or fallback to first order
-  const order = (id ? getOrderById(id) : undefined) || orders[0];
+  const { data: order, isLoading, isError, error, refetch } = useOrder(id, false);
+
+  if (isLoading) {
+    return (
+      <View style={styles.screen}>
+        <AppHeader isSeller={false} showBack title="Order" />
+        <View style={styles.emptyContainer}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+      </View>
+    );
+  }
 
   if (!order) {
     return (
       <View style={styles.screen}>
         <AppHeader isSeller={false} showBack title="Order Not Found" />
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyText}>Order details could not be found.</Text>
+          <Text style={styles.emptyText}>
+            {isError ? (error as Error)?.message || 'Could not load this order.' : 'Order details could not be found.'}
+          </Text>
           <PrimaryButton
-            title="Return to Orders"
-            onPress={() => router.replace('/(buyer)/(tabs)/orders')}
+            title={isError ? 'Retry' : 'Return to Orders'}
+            onPress={() => (isError ? refetch() : router.replace('/(buyer)/(tabs)/orders'))}
             style={{ marginTop: spacing.md }}
           />
         </View>
@@ -66,7 +80,7 @@ export default function BuyerOrderDetailScreen() {
       <AppHeader
         isSeller={false}
         showBack
-        title={`Order ${order.id}`}
+        title={`Order #${order.id}`}
         showSearch={false}
         showCart={false}
       />
@@ -86,7 +100,7 @@ export default function BuyerOrderDetailScreen() {
               variant={
                 order.status === 'delivered'
                   ? 'success'
-                  : order.status === 'cancelled' || order.status === 'returned'
+                  : order.status === 'cancelled' || order.status === 'rejected'
                   ? 'error'
                   : 'info'
               }
@@ -111,7 +125,7 @@ export default function BuyerOrderDetailScreen() {
               <Text style={styles.trackCtaText}>
                 {language === 'ta'
                   ? 'நேரலை விநியோகத்தை கண்காணிக்க'
-                  : 'Track Live Delivery Timeline & Map'}
+                  : 'Track Delivery Progress'}
               </Text>
               <MaterialCommunityIcons
                 name="arrow-right"
@@ -126,27 +140,19 @@ export default function BuyerOrderDetailScreen() {
         {order.status === 'delivered' && (
           <Card style={styles.reviewBannerCard}>
             <View style={styles.reviewBannerContent}>
-              <View style={[styles.reviewBannerIconBg, order.isReviewed ? styles.reviewBannerIconBgReviewed : styles.reviewBannerIconBgPending]}>
+              <View style={[styles.reviewBannerIconBg, styles.reviewBannerIconBgPending]}>
                 <MaterialCommunityIcons
-                  name={order.isReviewed ? 'check-decagram' : 'star'}
+                  name="star"
                   size={24}
-                  color={order.isReviewed ? colors.primaryDark : colors.white}
+                  color={colors.white}
                 />
               </View>
               <View style={styles.reviewBannerTextCol}>
                 <Text style={styles.reviewBannerTitle}>
-                  {order.isReviewed
-                    ? language === 'ta'
-                      ? 'விளைபொருள் மதிப்பிடப்பட்டது'
-                      : 'Harvest Reviewed ★'
-                    : language === 'ta'
-                    ? 'விளைபொருளை மதிப்பிடவும்'
-                    : 'Rate & Review Produce'}
+                  {language === 'ta' ? 'விளைபொருளை மதிப்பிடவும்' : 'Rate & Review Produce'}
                 </Text>
                 <Text style={styles.reviewBannerSubtitle}>
-                  {order.isReviewed
-                    ? `Quality: ${order.review?.productRating || 5}★ • Farmer: ${order.review?.farmerRating || 5}★`
-                    : language === 'ta'
+                  {language === 'ta'
                     ? 'விவசாயி, தரம் மற்றும் விநியோகத்திற்கு மதிப்பீடு வழங்கவும்'
                     : 'Share feedback on freshness, packaging & farmer'}
                 </Text>
@@ -158,20 +164,9 @@ export default function BuyerOrderDetailScreen() {
                     params: { orderId: order.id },
                   })
                 }
-                style={order.isReviewed ? styles.editReviewBtn : styles.leaveReviewBtn}>
-                <Text
-                  style={
-                    order.isReviewed
-                      ? styles.editReviewBtnText
-                      : styles.leaveReviewBtnText
-                  }>
-                  {order.isReviewed
-                    ? language === 'ta'
-                      ? 'திருத்து'
-                      : 'Edit'
-                    : language === 'ta'
-                    ? 'மதிப்பிட'
-                    : 'Review'}
+                style={styles.leaveReviewBtn}>
+                <Text style={styles.leaveReviewBtnText}>
+                  {language === 'ta' ? 'மதிப்பிட' : 'Review'}
                 </Text>
               </Pressable>
             </View>
@@ -257,11 +252,6 @@ export default function BuyerOrderDetailScreen() {
                   <Text style={styles.itemSubText}>
                     {item.quantity} {item.unit} • ₹{item.price} / {item.unit}
                   </Text>
-                  {item.farmerName && (
-                    <Text style={styles.itemFarmerTag}>
-                      Farmer: {item.farmerName}
-                    </Text>
-                  )}
                 </View>
 
                 <Text style={styles.itemTotal}>
@@ -285,25 +275,27 @@ export default function BuyerOrderDetailScreen() {
             </View>
             <View style={styles.farmerDetailsCol}>
               <Text style={styles.farmerNameText}>{order.sellerName}</Text>
-              <Text style={styles.farmerFarmText}>{order.sellerFarm}</Text>
-              <Text style={styles.farmerVillageText}>
-                {order.sellerVillage}
-              </Text>
+              {order.sellerAddress ? (
+                <Text style={styles.farmerVillageText}>{order.sellerAddress}</Text>
+              ) : null}
             </View>
-            <Pressable
-              onPress={() =>
-                Alert.alert(
-                  'Calling Farmer',
-                  `Dialing ${order.sellerName} at ${order.sellerPhone}`
-                )
-              }
-              style={styles.callFarmerSmallBtn}>
-              <MaterialCommunityIcons
-                name="phone"
-                size={16}
-                color={colors.white}
-              />
-            </Pressable>
+            {order.sellerPhone ? (
+              <Pressable
+                onPress={() =>
+                  Linking.openURL(`tel:${order.sellerPhone}`).catch(() =>
+                    Alert.alert('Unable to call', `Please call ${order.sellerPhone} from your phone.`)
+                  )
+                }
+                accessibilityRole="button"
+                accessibilityLabel={`Call ${order.sellerName}`}
+                style={styles.callFarmerSmallBtn}>
+                <MaterialCommunityIcons
+                  name="phone"
+                  size={16}
+                  color={colors.white}
+                />
+              </Pressable>
+            ) : null}
           </View>
         </Card>
 
@@ -326,19 +318,11 @@ export default function BuyerOrderDetailScreen() {
                 size={18}
                 color={colors.accent}
               />
-              <Text style={styles.slotText}>{order.deliverySlot}</Text>
+              <Text style={styles.slotText}>
+                {order.isExtendedDelivery ? 'Extended-distance delivery' : 'Standard delivery (24-48 hrs)'}
+                {order.distanceKm ? ` • ${order.distanceKm} km` : ''}
+              </Text>
             </View>
-
-            {order.deliveryNotes && (
-              <View style={styles.notesRow}>
-                <MaterialCommunityIcons
-                  name="note-text-outline"
-                  size={16}
-                  color={colors.textSecondary}
-                />
-                <Text style={styles.notesText}>{order.deliveryNotes}</Text>
-              </View>
-            )}
           </View>
         </Card>
 
@@ -370,14 +354,10 @@ export default function BuyerOrderDetailScreen() {
             <Text style={styles.billValue}>₹{order.subtotal}</Text>
           </View>
 
-          {order.couponDiscount > 0 && (
+          {order.extraDeliveryFee > 0 && (
             <View style={styles.billRow}>
-              <Text style={[styles.billLabel, { color: colors.primary }]}>
-                Coupon Discount
-              </Text>
-              <Text style={[styles.billValue, { color: colors.primary }]}>
-                - ₹{order.couponDiscount}
-              </Text>
+              <Text style={styles.billLabel}>Extra Transport Fee</Text>
+              <Text style={styles.billValue}>₹{order.extraDeliveryFee}</Text>
             </View>
           )}
 
@@ -441,7 +421,7 @@ export default function BuyerOrderDetailScreen() {
             <ScrollView showsVerticalScrollIndicator={false}>
               <View style={styles.invoiceMetaRow}>
                 <Text style={styles.invoiceMetaText}>
-                  Invoice No: INV-{order.id.replace('ORD-', '')}
+                  Receipt No: FK-{order.id}
                 </Text>
                 <Text style={styles.invoiceMetaText}>Date: {order.orderDate}</Text>
               </View>
@@ -450,8 +430,7 @@ export default function BuyerOrderDetailScreen() {
                 <View style={styles.invoicePartyCol}>
                   <Text style={styles.partyLabel}>Seller / Farmer:</Text>
                   <Text style={styles.partyName}>{order.sellerName}</Text>
-                  <Text style={styles.partySub}>{order.sellerFarm}</Text>
-                  <Text style={styles.partySub}>Mandi Reg: TN-MDU-2024</Text>
+                  {order.sellerAddress ? <Text style={styles.partySub}>{order.sellerAddress}</Text> : null}
                 </View>
                 <View style={styles.invoicePartyCol}>
                   <Text style={styles.partyLabel}>Billed To Buyer:</Text>
@@ -494,11 +473,25 @@ export default function BuyerOrderDetailScreen() {
             </ScrollView>
 
             <PrimaryButton
-              title="Save & Share Receipt (PDF)"
+              title="Share Receipt"
               icon="share-variant"
-              onPress={() => {
-                setShowInvoiceModal(false);
-                Alert.alert('Invoice Saved', 'Tax invoice saved to downloads!');
+              onPress={async () => {
+                const lines = [
+                  `FarmKart receipt FK-${order.id}`,
+                  `Date: ${order.orderDate}`,
+                  `Seller: ${order.sellerName}`,
+                  '',
+                  ...order.items.map((it) => `${it.name} — ${it.quantity} ${it.unit} × ₹${it.price} = ₹${(it.price * it.quantity).toFixed(2)}`),
+                  '',
+                  `Subtotal: ₹${order.subtotal}`,
+                  order.extraDeliveryFee > 0 ? `Extra transport fee: ₹${order.extraDeliveryFee}` : '',
+                  `Total: ₹${order.grandTotal} (${order.paymentMode.toUpperCase()}, ${order.paymentStatus})`,
+                ].filter(Boolean);
+                try {
+                  await Share.share({ message: lines.join('\n') });
+                } catch {
+                  Alert.alert('Unable to share', 'Please try again.');
+                }
               }}
               style={{ marginTop: spacing.sm }}
             />

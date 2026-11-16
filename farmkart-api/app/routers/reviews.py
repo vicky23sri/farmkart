@@ -1,5 +1,5 @@
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -8,6 +8,7 @@ from app.models.user import User
 from app.models.order import Order
 from app.models.product import Product
 from app.models.review import Review
+from app.schemas.common import PaginatedResponse
 from app.schemas.review import (
     ReviewCreateRequest,
     ReviewReplyRequest,
@@ -106,35 +107,57 @@ def reply_to_review(
     return res
 
 
-@router.get("/product/{product_id}", response_model=List[ReviewOut])
-def get_product_reviews(product_id: int, db: Session = Depends(get_db)):
-    """Public/buyer list of reviews for a specific product."""
-    reviews = (
+@router.get("/product/{product_id}", response_model=PaginatedResponse[ReviewOut])
+def get_product_reviews(
+    product_id: int,
+    limit: int = Query(20, ge=1, le=100, description="Items per page (1-100, default 20)"),
+    offset: int = Query(0, ge=0, description="Page offset (default 0)"),
+    db: Session = Depends(get_db),
+):
+    """Public/buyer list of reviews for a specific product with limit/offset pagination."""
+    query = (
         db.query(Review)
         .filter(Review.product_id == product_id)
         .order_by(Review.id.desc())
-        .all()
     )
+    total = query.count()
+    reviews = query.offset(offset).limit(limit).all()
     output = []
     for r in reviews:
         item = ReviewOut.model_validate(r)
         item.buyer_name = r.buyer.name if r.buyer else "Verified Buyer"
         output.append(item)
-    return output
+    return {
+        "items": output,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
-@router.get("/seller/{seller_id}", response_model=List[ReviewOut])
-def get_seller_reviews(seller_id: int, db: Session = Depends(get_db)):
-    """List of all customer reviews received by a seller."""
-    reviews = (
+@router.get("/seller/{seller_id}", response_model=PaginatedResponse[ReviewOut])
+def get_seller_reviews(
+    seller_id: int,
+    limit: int = Query(20, ge=1, le=100, description="Items per page (1-100, default 20)"),
+    offset: int = Query(0, ge=0, description="Page offset (default 0)"),
+    db: Session = Depends(get_db),
+):
+    """List of all customer reviews received by a seller with limit/offset pagination."""
+    query = (
         db.query(Review)
         .filter(Review.seller_id == seller_id)
         .order_by(Review.id.desc())
-        .all()
     )
+    total = query.count()
+    reviews = query.offset(offset).limit(limit).all()
     output = []
     for r in reviews:
         item = ReviewOut.model_validate(r)
         item.buyer_name = r.buyer.name if r.buyer else "Verified Buyer"
         output.append(item)
-    return output
+    return {
+        "items": output,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }

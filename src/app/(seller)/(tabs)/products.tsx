@@ -8,14 +8,16 @@
  */
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  FlatList,
   Image,
   Modal,
   Pressable,
-  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -26,26 +28,70 @@ import {
 import { AppHeader } from '@/components/AppHeader';
 import { Card } from '@/components/Card';
 import { PrimaryButton } from '@/components/PrimaryButton';
-import {
-  SellerProduct,
-  useLanguageStore,
-  useSellerProductStore,
-} from '@/store';
+import { productService } from '@/services/productService';
+import { SellerProduct, useLanguageStore } from '@/store';
 import { colors, fontSizes, shadows, spacing } from '@/theme';
 
 type ProductFilterTab = 'all' | 'active' | 'low_stock' | 'paused';
 
 export default function SellerProductsScreen() {
   const { language } = useLanguageStore();
-  const {
-    products,
-    toggleActive,
-    updateStock,
-    updateProduct,
-    deleteProduct,
-  } = useSellerProductStore();
+  const queryClient = useQueryClient();
 
   const [activeTab, setActiveTab] = useState<ProductFilterTab>('all');
+
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    isFetchingNextPage,
+    hasNextPage,
+    fetchNextPage,
+    refetch,
+    isRefetching,
+  } = useInfiniteQuery({
+    queryKey: ['seller-my-products-infinite'],
+    queryFn: ({ pageParam = 0 }) =>
+      productService.getMyProducts({
+        limit: 20,
+        offset: pageParam,
+      }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => {
+      const nextOffset = lastPage.offset + lastPage.limit;
+      return nextOffset < lastPage.total ? nextOffset : undefined;
+    },
+  });
+
+  const displayProducts: SellerProduct[] = useMemo(() => {
+    return (data?.pages ?? []).flatMap((page) =>
+        page.items.map((p) => ({
+          id: String(p.id),
+          name: p.name,
+          nameTamil: p.nameTamil,
+          category: (p.category as any) || 'vegetables',
+          categoryLabel: p.category,
+          price: p.price,
+          unit: (p.unit as any) || 'kg',
+          stock: p.stock,
+          minOrder: p.minOrder,
+          harvestDate: p.harvestDate,
+          isOrganic: p.isOrganic,
+          isActive: p.isActive !== false,
+          photos: p.images,
+          vehicleType: p.vehicleType || 'mini_truck',
+          deliveryRadiusKm: 50,
+          rating: p.rating || 0,
+          reviewCount: p.reviewCount || 0,
+        }))
+      );
+  }, [data]);
+
+  const refreshProducts = () => {
+    queryClient.invalidateQueries({ queryKey: ['seller-my-products-infinite'] });
+    queryClient.invalidateQueries({ queryKey: ['seller-products-dashboard'] });
+  };
 
   // Stock Update Modal State
   const [stockModalProduct, setStockModalProduct] = useState<SellerProduct | null>(null);
@@ -61,15 +107,15 @@ export default function SellerProductsScreen() {
   const filteredProducts = useMemo(() => {
     switch (activeTab) {
       case 'active':
-        return products.filter((p) => p.isActive);
+        return displayProducts.filter((p) => p.isActive);
       case 'low_stock':
-        return products.filter((p) => p.isActive && p.stock <= 15);
+        return displayProducts.filter((p) => p.isActive && p.stock <= 15);
       case 'paused':
-        return products.filter((p) => !p.isActive);
+        return displayProducts.filter((p) => !p.isActive);
       default:
-        return products;
+        return displayProducts;
     }
-  }, [products, activeTab]);
+  }, [displayProducts, activeTab]);
 
   // Open Stock Modal
   const openStockModal = (product: SellerProduct) => {
@@ -78,7 +124,7 @@ export default function SellerProductsScreen() {
   };
 
   // Submit Stock Update
-  const handleSaveStock = () => {
+  const handleSaveStock = async () => {
     if (!stockModalProduct) return;
     const stockNum = Number(newStockInput);
     if (isNaN(stockNum) || stockNum < 0) {
@@ -86,7 +132,13 @@ export default function SellerProductsScreen() {
       return;
     }
 
-    updateStock(stockModalProduct.id, stockNum);
+    try {
+      await productService.updateStock(stockModalProduct.id, stockNum);
+    } catch (err: any) {
+      Alert.alert('Could not update stock', err?.message || 'Please try again.');
+      return;
+    }
+    refreshProducts();
     setStockModalProduct(null);
 
     Alert.alert(
@@ -104,7 +156,7 @@ export default function SellerProductsScreen() {
   };
 
   // Save Edit Changes
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editModalProduct) return;
     const priceNum = Number(editPrice);
     const minOrderNum = Number(editMinOrder);
@@ -114,12 +166,17 @@ export default function SellerProductsScreen() {
       return;
     }
 
-    updateProduct(editModalProduct.id, {
-      price: priceNum,
-      minOrder: isNaN(minOrderNum) || minOrderNum <= 0 ? 1 : minOrderNum,
-      harvestDate: editHarvestDate.trim() || editModalProduct.harvestDate,
-    });
-
+    try {
+      await productService.updateProduct(editModalProduct.id, {
+        price: priceNum,
+        min_order: isNaN(minOrderNum) || minOrderNum <= 0 ? 1 : minOrderNum,
+        harvest_date: editHarvestDate.trim() || editModalProduct.harvestDate,
+      });
+    } catch (err: any) {
+      Alert.alert('Could not save changes', err?.message || 'Please try again.');
+      return;
+    }
+    refreshProducts();
     setEditModalProduct(null);
 
     Alert.alert(
@@ -140,10 +197,26 @@ export default function SellerProductsScreen() {
         {
           text: language === 'ta' ? 'நீக்கு' : 'Delete',
           style: 'destructive',
-          onPress: () => deleteProduct(product.id),
+          onPress: async () => {
+            try {
+              await productService.deleteProduct(product.id);
+              refreshProducts();
+            } catch (err: any) {
+              Alert.alert('Could not delete', err?.message || 'Please try again.');
+            }
+          },
         },
       ]
     );
+  };
+
+  const handleToggleActive = async (crop: SellerProduct) => {
+    try {
+      await productService.toggleActive(crop.id, !crop.isActive);
+      refreshProducts();
+    } catch (err: any) {
+      Alert.alert('Could not update listing', err?.message || 'Please try again.');
+    }
   };
 
   return (
@@ -159,21 +232,21 @@ export default function SellerProductsScreen() {
       {/* Tabs Filter Bar */}
       <View style={styles.tabsBar}>
         {[
-          { id: 'all' as const, label: 'All', count: products.length },
+          { id: 'all' as const, label: 'All', count: displayProducts.length },
           {
             id: 'active' as const,
             label: 'Active',
-            count: products.filter((p) => p.isActive).length,
+            count: displayProducts.filter((p) => p.isActive).length,
           },
           {
             id: 'low_stock' as const,
             label: 'Low Stock',
-            count: products.filter((p) => p.isActive && p.stock <= 15).length,
+            count: displayProducts.filter((p) => p.isActive && p.stock <= 15).length,
           },
           {
             id: 'paused' as const,
             label: 'Paused',
-            count: products.filter((p) => !p.isActive).length,
+            count: displayProducts.filter((p) => !p.isActive).length,
           },
         ].map((tab) => {
           const isSelected = activeTab === tab.id;
@@ -204,33 +277,60 @@ export default function SellerProductsScreen() {
         })}
       </View>
 
-      <ScrollView
+      <FlatList
+        data={filteredProducts}
+        keyExtractor={(item) => item.id}
         contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}>
-        {/* Top Header Summary & Add CTA */}
-        <View style={styles.summaryBar}>
-          <View>
-            <Text style={styles.summaryTitle}>
-              {language === 'ta' ? 'பண்ணை சரக்கிருப்பு' : 'Farm Crop Inventory'}
-            </Text>
-            <Text style={styles.summarySubtitle}>
-              {products.filter((p) => p.isActive).length} active harvests visible to
-              buyers within 50 km
-            </Text>
+        showsVerticalScrollIndicator={false}
+        onEndReached={() => {
+          if (hasNextPage && !isFetchingNextPage) {
+            fetchNextPage();
+          }
+        }}
+        onEndReachedThreshold={0.4}
+        refreshing={isRefetching}
+        onRefresh={refetch}
+        ListHeaderComponent={
+          <View style={styles.summaryBar}>
+            <View>
+              <Text style={styles.summaryTitle}>
+                {language === 'ta' ? 'பண்ணை சரக்கிருப்பு' : 'Farm Crop Inventory'}
+              </Text>
+              <Text style={styles.summarySubtitle}>
+                {displayProducts.filter((p) => p.isActive).length} active harvests visible to
+                buyers within 50 km
+              </Text>
+            </View>
+
+            <Pressable
+              style={styles.addBtn}
+              onPress={() => router.push('/(seller)/add-product')}>
+              <MaterialCommunityIcons name="plus" size={18} color={colors.white} />
+              <Text style={styles.addBtnText}>
+                {language === 'ta' ? 'புதிய பயிர்' : 'Add Crop'}
+              </Text>
+            </Pressable>
           </View>
-
-          <Pressable
-            style={styles.addBtn}
-            onPress={() => router.push('/(seller)/add-product')}>
-            <MaterialCommunityIcons name="plus" size={18} color={colors.white} />
-            <Text style={styles.addBtnText}>
-              {language === 'ta' ? 'புதிய பயிர்' : 'Add Crop'}
-            </Text>
-          </Pressable>
-        </View>
-
-        {/* Listings List */}
-        {filteredProducts.length === 0 ? (
+        }
+        ListFooterComponent={
+          isFetchingNextPage ? (
+            <View style={{ paddingVertical: spacing.md, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={colors.primary} />
+            </View>
+          ) : undefined
+        }
+        ListEmptyComponent={
+          isLoading ? (
+            <View style={{ paddingVertical: spacing.xl, alignItems: 'center' }}>
+              <ActivityIndicator size="large" color={colors.primary} />
+            </View>
+          ) : isError ? (
+            <Card style={styles.emptyCard}>
+              <MaterialCommunityIcons name="wifi-off" size={48} color={colors.error} />
+              <Text style={styles.emptyTitle}>Could not load your listings</Text>
+              <Text style={styles.emptySubtitle}>{(error as Error)?.message || 'Pull down to retry.'}</Text>
+            </Card>
+          ) : (
           <Card style={styles.emptyCard}>
             <MaterialCommunityIcons
               name="sprout-outline"
@@ -248,10 +348,11 @@ export default function SellerProductsScreen() {
               style={{ marginTop: spacing.sm }}
             />
           </Card>
-        ) : (
-          filteredProducts.map((crop) => {
-            const isLowStock = crop.isActive && crop.stock <= 15;
-            const thumbUri = crop.photos[0];
+          )
+        }
+        renderItem={({ item: crop }) => {
+          const isLowStock = crop.isActive && crop.stock <= 15;
+          const thumbUri = crop.photos[0];
 
             return (
               <Card key={crop.id} style={styles.cropCard}>
@@ -291,7 +392,7 @@ export default function SellerProductsScreen() {
                   <View style={styles.switchCol}>
                     <Switch
                       value={crop.isActive}
-                      onValueChange={() => toggleActive(crop.id)}
+                      onValueChange={() => handleToggleActive(crop)}
                       trackColor={{ false: '#E0E0E0', true: colors.primaryLight }}
                       thumbColor={crop.isActive ? colors.primaryDark : '#BDBDBD'}
                     />
@@ -402,9 +503,8 @@ export default function SellerProductsScreen() {
                 </View>
               </Card>
             );
-          })
-        )}
-      </ScrollView>
+        }}
+      />
 
       {/* Stock Update Modal */}
       <Modal

@@ -1,7 +1,9 @@
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.orm import Session
 from typing import Optional
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.orm import Session
+
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.models.user import User
@@ -17,6 +19,20 @@ __all__ = [
 ]
 
 
+def _resolve_user(token: str, db: Session) -> Optional[User]:
+    payload = decode_access_token(token)
+    if not payload:
+        return None
+    try:
+        user_id = int(payload.get("user_id"))
+    except (TypeError, ValueError):
+        return None
+    user = db.get(User, user_id)
+    if not user or user.deleted_at is not None:
+        return None
+    return user
+
+
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
     db: Session = Depends(get_db),
@@ -28,30 +44,13 @@ def get_current_user(
             detail="Authentication token is missing. Please log in.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-    token = credentials.credentials
-    payload = decode_access_token(token)
-    if not payload:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token. Please log in again.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    user_id = payload.get("user_id")
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token payload is missing user ID.",
-        )
-
-    user = db.query(User).filter(User.id == int(user_id)).first()
+    user = _resolve_user(credentials.credentials, db)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found in system.",
+            detail="Invalid or expired session. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
-
     return user
 
 
@@ -82,11 +81,4 @@ def get_current_user_optional(
     """Extract user if valid token provided; returns None if guest or missing token."""
     if not credentials:
         return None
-    token = credentials.credentials
-    payload = decode_access_token(token)
-    if not payload:
-        return None
-    user_id = payload.get("user_id")
-    if not user_id:
-        return None
-    return db.query(User).filter(User.id == int(user_id)).first()
+    return _resolve_user(credentials.credentials, db)

@@ -182,12 +182,20 @@ export default function BuyerCheckoutScreen() {
       return;
     }
 
+    const slot = DELIVERY_SLOTS.find((sl) => sl.id === selectedSlotId);
+    const combinedNotes = [
+      slot ? `Preferred time: ${slot.title} (${slot.timeWindow})` : '',
+      deliveryNotes.trim(),
+    ]
+      .filter(Boolean)
+      .join('. ')
+      .slice(0, 500);
+
     // Navigate to dedicated payment screen
     router.push({
       pathname: '/(buyer)/payment',
       params: {
-        slotId: selectedSlotId,
-        notes: deliveryNotes,
+        notes: combinedNotes,
         grandTotal: String(grandTotal),
         isExtendedDelivery: isBlocked ? 'true' : 'false',
         address: currentLocation ? `${currentLocation.address}, ${currentLocation.name}` : '',
@@ -465,7 +473,7 @@ export default function BuyerCheckoutScreen() {
             </View>
             <View style={styles.headerTextCol}>
               <Text style={styles.sectionTitle}>
-                {language === 'ta' ? 'விநியோக நேரம்' : 'Delivery Slot'}
+                {language === 'ta' ? 'விரும்பிய விநியோக நேரம்' : 'Preferred Delivery Time'}
               </Text>
               <Text style={styles.sectionSubtitle}>
                 Select when farmers should harvest and dispatch
@@ -608,7 +616,7 @@ export default function BuyerCheckoutScreen() {
                   {deliveryBreakdown.vehicleName}
                 </Text>
               </View>
-              <Text style={styles.billValue}>₹{deliveryFee}</Text>
+              <Text style={styles.billValue}>{deliveryFee > 0 ? `₹${deliveryFee}` : 'Free'}</Text>
             </View>
 
             <View style={[styles.billRow, styles.billGrandTotalRow]}>

@@ -3,14 +3,17 @@
  * Features:
  * - Segmented switch between "Buyer Reviews" and "Payouts & COD Status"
  * - Reviews with Farmer Reply feature (modal reply prompt & instant response display)
- * - Payouts Overview with detailed COD Collection Status (driver cash handover & bank remittance)
+ * - Earnings overview from the payouts API (UPI received directly, COD collected / pending)
  * - Features the signature dark green header with "Seller Mode" pill.
  */
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import React, { useState } from 'react';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  FlatList,
   Modal,
   Pressable,
   ScrollView,
@@ -23,6 +26,9 @@ import {
 import { AppHeader } from '@/components/AppHeader';
 import { Card } from '@/components/Card';
 import { RatingStars } from '@/components/RatingStars';
+import { authService } from '@/services/authService';
+import { payoutService } from '@/services/payoutService';
+import { reviewService } from '@/services/reviewService';
 import { useLanguageStore } from '@/store';
 import { colors, fontSizes, shadows, spacing } from '@/theme';
 
@@ -38,83 +44,64 @@ interface SellerReviewItem {
   replyDate?: string;
 }
 
-interface CodHandoverItem {
-  id: string;
-  driverName: string;
-  vehicle: string;
-  orderId: string;
-  amount: number;
-  status: 'pending_deposit' | 'deposited' | 'settled';
-}
-
-const INITIAL_REVIEWS: SellerReviewItem[] = [
-  {
-    id: 'rev-1',
-    buyer: 'Karthik V.',
-    date: 'Today, 3:45 PM',
-    crop: 'Country Tomatoes (நாட்டு தக்காளி)',
-    rating: 5.0,
-    tags: ['Fresh Harvest', 'Good Packaging', 'On Time'],
-    comment:
-      'Super fresh organic harvest! Picked straight from the vines and delivered the same afternoon. Authentic country taste.',
-    farmerReply:
-      'மிக்க நன்றி கார்த்திக் தம்பி! அடுத்த அறுவடை 10 நாட்களில் தயாராகும். (Thank you Karthik! Next batch ready in 10 days.)',
-    replyDate: 'Today, 4:10 PM',
-  },
-  {
-    id: 'rev-2',
-    buyer: 'Meenakshi Sundaram',
-    date: 'Yesterday',
-    crop: 'Seeraga Samba Nellu (சீரக சம்பா)',
-    rating: 4.8,
-    tags: ['Fair Price', '100% Organic', 'Careful Handling'],
-    comment:
-      'Aged Cauvery delta paddy with zero chemical smell. Cooked aromatic biryani. Will buy full year harvest directly.',
-  },
-  {
-    id: 'rev-3',
-    buyer: 'Dr. S. Rajendran',
-    date: '3 days ago',
-    crop: 'Desi Cow Dung Vermicompost (மண்புழு உரம்)',
-    rating: 5.0,
-    tags: ['100% Organic', 'Friendly Farmer'],
-    comment:
-      'Loaded directly onto our farm pickup. Well-cured 9 months compost, rich dark texture. Garden plants are thriving!',
-  },
-];
-
-const COD_HANDOVERS: CodHandoverItem[] = [
-  {
-    id: 'cod-1',
-    driverName: 'Senthil Kumar',
-    vehicle: 'Two-Wheeler Express (TN-59-BZ-4102)',
-    orderId: 'ORD-7821',
-    amount: 219,
-    status: 'pending_deposit',
-  },
-  {
-    id: 'cod-2',
-    driverName: 'Murugan',
-    vehicle: 'Mini Truck (TN-58-BZ-4412)',
-    orderId: 'ORD-6402',
-    amount: 690,
-    status: 'deposited',
-  },
-  {
-    id: 'cod-3',
-    driverName: 'Palanisamy',
-    vehicle: 'Tractor Trolley (TN-59-AG-1892)',
-    orderId: 'ORD-3912',
-    amount: 3500,
-    status: 'settled',
-  },
-];
+const formatINR = (n: number) => `₹${Math.round(n).toLocaleString('en-IN')}`;
 
 export default function SellerReviewsScreen() {
   const { language } = useLanguageStore();
 
   const [activeSegment, setActiveSegment] = useState<'reviews' | 'payouts'>('reviews');
-  const [reviewsList, setReviewsList] = useState<SellerReviewItem[]>(INITIAL_REVIEWS);
+  const { data: profile } = useQuery({ queryKey: ['me'], queryFn: () => authService.getProfile() });
+  const sellerId = profile?.id;
+  const { data: payout, isLoading: isPayoutLoading, refetch: refetchPayout } = useQuery({
+    queryKey: ['payout-summary'],
+    queryFn: () => payoutService.getPayoutSummary(),
+  });
+
+  const {
+    data,
+    isLoading,
+    isFetchingNextPage,
+    hasNextPage,
+    fetchNextPage,
+    refetch,
+    isRefetching,
+  } = useInfiniteQuery({
+    queryKey: ['seller-reviews-infinite', sellerId],
+    queryFn: ({ pageParam = 0 }) => reviewService.getSellerReviews(sellerId!, 20, pageParam),
+    enabled: Boolean(sellerId),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => {
+      const nextOffset = lastPage.offset + lastPage.limit;
+      return nextOffset < lastPage.total ? nextOffset : undefined;
+    },
+  });
+
+  const rawReviews = useMemo(() => data?.pages.flatMap((page) => page.items) ?? [], [data]);
+  const totalReviews = data?.pages[0]?.total ?? 0;
+
+  const displayReviews: SellerReviewItem[] = useMemo(
+    () =>
+      rawReviews.map((r) => ({
+        id: String(r.id),
+        buyer: r.buyer_name || 'Verified Buyer',
+        date: r.created_at ? new Date(/[zZ]$/.test(r.created_at) ? r.created_at : `${r.created_at}Z`).toLocaleDateString() : '',
+        crop: `Order #${r.order_id}`,
+        rating: r.product_rating,
+        tags: r.tags || [],
+        comment: r.text || '',
+        farmerReply: r.seller_reply,
+        replyDate: r.seller_reply ? 'Answered' : undefined,
+      })),
+    [rawReviews]
+  );
+
+  const average = (key: 'product_rating' | 'farmer_rating' | 'delivery_rating') =>
+    rawReviews.length ? rawReviews.reduce((acc, r) => acc + (r[key] || 0), 0) / rawReviews.length : 0;
+  const avgProduct = average('product_rating');
+  const avgFarmer = average('farmer_rating');
+  const avgDelivery = average('delivery_rating');
+  const avgOverall = rawReviews.length ? (avgProduct + avgFarmer + avgDelivery) / 3 : 0;
+  const [isSavingReply, setIsSavingReply] = useState(false);
 
   // Reply Modal State
   const [replyModalReview, setReplyModalReview] = useState<SellerReviewItem | null>(null);
@@ -127,20 +114,19 @@ export default function SellerReviewsScreen() {
   };
 
   // Submit Farmer Reply
-  const handleSaveReply = () => {
-    if (!replyModalReview || !replyInputText.trim()) return;
+  const handleSaveReply = async () => {
+    if (!replyModalReview || replyInputText.trim().length < 2) return;
 
-    setReviewsList((prev) =>
-      prev.map((r) =>
-        r.id === replyModalReview.id
-          ? {
-              ...r,
-              farmerReply: replyInputText.trim(),
-              replyDate: 'Just now',
-            }
-          : r
-      )
-    );
+    setIsSavingReply(true);
+    try {
+      await reviewService.replyToReview(Number(replyModalReview.id), replyInputText.trim());
+      await refetch();
+    } catch (err: any) {
+      Alert.alert('Could not publish reply', err?.message || 'Please try again.');
+      return;
+    } finally {
+      setIsSavingReply(false);
+    }
 
     setReplyModalReview(null);
 
@@ -205,155 +191,179 @@ export default function SellerReviewsScreen() {
         </Pressable>
       </View>
 
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}>
-        {/* ======================================================== */}
-        {/* TAB 1: BUYER REVIEWS WITH FARMER REPLY */}
-        {/* ======================================================== */}
-        {activeSegment === 'reviews' && (
-          <>
-            {/* Overall Farm Rating Card */}
-            <Card style={styles.summaryCard}>
-              <View style={styles.ratingScoreCol}>
-                <Text style={styles.summaryScore}>4.9</Text>
-                <RatingStars rating={4.9} size={18} showScore={false} />
-                <Text style={styles.summaryText}>148 verified orders</Text>
-              </View>
-
-              <View style={styles.summaryBreakdownCol}>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Product Freshness</Text>
-                  <Text style={styles.breakdownVal}>4.9 ★</Text>
+      {activeSegment === 'reviews' ? (
+        <FlatList
+          data={displayReviews}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          onEndReached={() => {
+            if (hasNextPage && !isFetchingNextPage) {
+              fetchNextPage();
+            }
+          }}
+          onEndReachedThreshold={0.4}
+          refreshing={isRefetching}
+          onRefresh={refetch}
+          ListHeaderComponent={
+            <>
+              {/* Overall Farm Rating Card */}
+              <Card style={styles.summaryCard}>
+                <View style={styles.ratingScoreCol}>
+                  <Text style={styles.summaryScore}>{totalReviews ? avgOverall.toFixed(1) : '—'}</Text>
+                  <RatingStars rating={avgOverall} size={18} showScore={false} />
+                  <Text style={styles.summaryText}>{totalReviews} reviews</Text>
                 </View>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Farmer & Farm Trust</Text>
-                  <Text style={styles.breakdownVal}>5.0 ★</Text>
-                </View>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Logistics & Dispatch</Text>
-                  <Text style={styles.breakdownVal}>4.8 ★</Text>
-                </View>
-              </View>
-            </Card>
 
-            <Text style={styles.sectionTitle}>
-              {language === 'ta' ? 'வாங்குபவர் கருத்துகள்' : 'Recent Customer Reviews'}
-            </Text>
-
-            <View style={styles.reviewsList}>
-              {reviewsList.map((rev) => (
-                <Card key={rev.id} style={styles.reviewCard}>
-                  {/* Review Header */}
-                  <View style={styles.reviewHeader}>
-                    <View>
-                      <View style={styles.buyerNameRow}>
-                        <Text style={styles.buyerName}>{rev.buyer}</Text>
-                        <View style={styles.verifiedBuyerTag}>
-                          <MaterialCommunityIcons
-                            name="check-circle"
-                            size={12}
-                            color={colors.primaryDark}
-                          />
-                          <Text style={styles.verifiedBuyerText}>Verified Buyer</Text>
-                        </View>
-                      </View>
-                      <Text style={styles.cropTag}>{rev.crop}</Text>
-                    </View>
-                    <Text style={styles.reviewDate}>{rev.date}</Text>
+                <View style={styles.summaryBreakdownCol}>
+                  <View style={styles.breakdownRow}>
+                    <Text style={styles.breakdownLabel}>Product Quality</Text>
+                    <Text style={styles.breakdownVal}>{totalReviews ? `${avgProduct.toFixed(1)} ★` : '—'}</Text>
                   </View>
+                  <View style={styles.breakdownRow}>
+                    <Text style={styles.breakdownLabel}>Farmer</Text>
+                    <Text style={styles.breakdownVal}>{totalReviews ? `${avgFarmer.toFixed(1)} ★` : '—'}</Text>
+                  </View>
+                  <View style={styles.breakdownRow}>
+                    <Text style={styles.breakdownLabel}>Delivery</Text>
+                    <Text style={styles.breakdownVal}>{totalReviews ? `${avgDelivery.toFixed(1)} ★` : '—'}</Text>
+                  </View>
+                </View>
+              </Card>
 
-                  <RatingStars rating={rev.rating} size={14} />
-
-                  {/* Quick Tags */}
-                  {rev.tags && rev.tags.length > 0 && (
-                    <View style={styles.tagsRow}>
-                      {rev.tags.map((t, idx) => (
-                        <View key={idx} style={styles.tagPill}>
-                          <Text style={styles.tagPillText}>✓ {t}</Text>
-                        </View>
-                      ))}
+              <Text style={styles.sectionTitle}>
+                {language === 'ta' ? 'வாங்குபவர் கருத்துகள்' : 'Recent Customer Reviews'}
+              </Text>
+            </>
+          }
+          ListEmptyComponent={
+            isLoading || !sellerId ? (
+              <ActivityIndicator style={{ marginTop: spacing.lg }} color={colors.primary} />
+            ) : (
+              <Text style={[styles.summaryText, { textAlign: 'center', marginTop: spacing.lg }]}>
+                No reviews yet. Reviews appear after buyers receive their orders.
+              </Text>
+            )
+          }
+          ListFooterComponent={
+            isFetchingNextPage ? (
+              <View style={{ paddingVertical: spacing.md, alignItems: 'center' }}>
+                <ActivityIndicator size="small" color={colors.primary} />
+              </View>
+            ) : undefined
+          }
+          renderItem={({ item: rev }) => (
+            <Card key={rev.id} style={styles.reviewCard}>
+              {/* Review Header */}
+              <View style={styles.reviewHeader}>
+                <View>
+                  <View style={styles.buyerNameRow}>
+                    <Text style={styles.buyerName}>{rev.buyer}</Text>
+                    <View style={styles.verifiedBuyerTag}>
+                      <MaterialCommunityIcons
+                        name="check-circle"
+                        size={12}
+                        color={colors.primaryDark}
+                      />
+                      <Text style={styles.verifiedBuyerText}>Verified Buyer</Text>
                     </View>
-                  )}
+                  </View>
+                  <Text style={styles.cropTag}>{rev.crop}</Text>
+                </View>
+                <Text style={styles.reviewDate}>{rev.date}</Text>
+              </View>
 
-                  <Text style={styles.commentText}>{rev.comment}</Text>
+              <RatingStars rating={rev.rating} size={14} />
 
-                  {/* Existing Farmer Reply */}
-                  {rev.farmerReply && (
-                    <View style={styles.farmerReplyBox}>
-                      <View style={styles.replyHeaderRow}>
-                        <MaterialCommunityIcons
-                          name="tractor"
-                          size={14}
-                          color={colors.primaryDark}
-                        />
-                        <Text style={styles.replyTitle}>Your Reply as Farmer:</Text>
-                        {rev.replyDate && (
-                          <Text style={styles.replyDateText}>{rev.replyDate}</Text>
-                        )}
-                      </View>
-                      <Text style={styles.replyContentText}>{rev.farmerReply}</Text>
+              {/* Quick Tags */}
+              {rev.tags && rev.tags.length > 0 && (
+                <View style={styles.tagsRow}>
+                  {rev.tags.map((t, idx) => (
+                    <View key={idx} style={styles.tagPill}>
+                      <Text style={styles.tagPillText}>✓ {t}</Text>
                     </View>
-                  )}
+                  ))}
+                </View>
+              )}
 
-                  {/* Reply Button */}
-                  <Pressable
-                    style={styles.replyBtn}
-                    onPress={() => openReplyModal(rev)}>
+              <Text style={styles.commentText}>{rev.comment}</Text>
+
+              {/* Existing Farmer Reply */}
+              {rev.farmerReply && (
+                <View style={styles.farmerReplyBox}>
+                  <View style={styles.replyHeaderRow}>
                     <MaterialCommunityIcons
-                      name="reply"
+                      name="tractor"
                       size={14}
                       color={colors.primaryDark}
                     />
-                    <Text style={styles.replyBtnText}>
-                      {rev.farmerReply
-                        ? language === 'ta'
-                          ? 'பதிலை மாற்று'
-                          : 'Edit Reply'
-                        : language === 'ta'
-                        ? 'வாங்குபவருக்கு பதிலளி'
-                        : 'Reply to Buyer'}
-                    </Text>
-                  </Pressable>
-                </Card>
-              ))}
-            </View>
-          </>
-        )}
+                    <Text style={styles.replyTitle}>Your Reply as Farmer:</Text>
+                    {rev.replyDate && (
+                      <Text style={styles.replyDateText}>{rev.replyDate}</Text>
+                    )}
+                  </View>
+                  <Text style={styles.replyContentText}>{rev.farmerReply}</Text>
+                </View>
+              )}
 
-        {/* ======================================================== */}
-        {/* TAB 2: PAYOUTS & COD COLLECTION STATUS */}
-        {/* ======================================================== */}
-        {activeSegment === 'payouts' && (
+              {/* Reply Button */}
+              <Pressable
+                style={styles.replyBtn}
+                onPress={() => openReplyModal(rev)}>
+                <MaterialCommunityIcons
+                  name="reply"
+                  size={14}
+                  color={colors.primaryDark}
+                />
+                <Text style={styles.replyBtnText}>
+                  {rev.farmerReply
+                    ? language === 'ta'
+                      ? 'பதிலை மாற்று'
+                      : 'Edit Reply'
+                    : language === 'ta'
+                    ? 'வாங்குபவருக்கு பதிலளி'
+                    : 'Reply to Buyer'}
+                </Text>
+              </Pressable>
+            </Card>
+          )}
+        />
+      ) : (
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}>
+
+        {/* TAB 2: EARNINGS (from /payouts/summary) */}
+        {isPayoutLoading ? (
+          <ActivityIndicator style={{ marginTop: spacing.lg }} color={colors.primary} />
+        ) : (
           <>
-            {/* Net Payout Balance Card */}
             <Card style={styles.payoutOverviewCard}>
               <View style={styles.payoutHeaderRow}>
                 <View>
-                  <Text style={styles.payoutLabel}>Total Settled Earnings (This Month)</Text>
-                  <Text style={styles.payoutTotalAmount}>₹84,250</Text>
+                  <Text style={styles.payoutLabel}>Earnings from Delivered Orders</Text>
+                  <Text style={styles.payoutTotalAmount}>{formatINR(payout?.total_earnings ?? 0)}</Text>
                 </View>
                 <View style={styles.subsidyBadge}>
-                  <Text style={styles.subsidyBadgeText}>0% Platform Fee</Text>
+                  <Text style={styles.subsidyBadgeText}>{payout?.delivered_orders_count ?? 0} delivered</Text>
                 </View>
               </View>
 
               <View style={styles.payoutDetailsGrid}>
                 <View style={styles.payoutGridCol}>
-                  <Text style={styles.gridSubLabel}>Available for Transfer</Text>
-                  <Text style={styles.gridSubValue}>₹18,450</Text>
+                  <Text style={styles.gridSubLabel}>UPI received (confirmed)</Text>
+                  <Text style={styles.gridSubValue}>{formatINR(payout?.online_earnings ?? 0)}</Text>
                 </View>
                 <View style={styles.payoutGridDivider} />
                 <View style={styles.payoutGridCol}>
-                  <Text style={styles.gridSubLabel}>Next NEFT Cycle</Text>
+                  <Text style={styles.gridSubLabel}>COD collected</Text>
                   <Text style={[styles.gridSubValue, { color: colors.primaryDark }]}>
-                    Today, 6:00 PM
+                    {formatINR(payout?.cod_collected ?? 0)}
                   </Text>
                 </View>
               </View>
             </Card>
 
-            {/* COD Collection Status Card */}
             <Card style={styles.codStatusCard}>
               <View style={styles.codHeaderRow}>
                 <View style={styles.codIconCircle}>
@@ -361,104 +371,37 @@ export default function SellerReviewsScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.codCardTitle}>
-                    {language === 'ta'
-                      ? 'பொருளைப் பெற்றவுடன் ரொக்கம் (COD நிலவரம்)'
-                      : 'Cash on Delivery (COD) Collection Status'}
+                    {language === 'ta' ? 'பொருளைப் பெற்றவுடன் ரொக்கம் (COD)' : 'Cash on Delivery (COD)'}
                   </Text>
                   <Text style={styles.codCardSubtitle}>
-                    Real-time driver collections & Mandi cash desk deposits
+                    You collect COD cash from the buyer at handover. UPI payments go directly to your UPI ID.
                   </Text>
                 </View>
               </View>
 
-              {/* COD Balance Metrics */}
               <View style={styles.codMetricsRow}>
                 <View style={styles.codMetricBox}>
-                  <Text style={styles.codMetricValue}>₹4,409</Text>
-                  <Text style={styles.codMetricLabel}>Cash with Delivery Drivers</Text>
-                  <Text style={styles.codMetricHint}>Awaiting daily deposit</Text>
+                  <Text style={styles.codMetricValue}>{formatINR(payout?.cod_pending ?? 0)}</Text>
+                  <Text style={styles.codMetricLabel}>COD still to collect</Text>
+                  <Text style={styles.codMetricHint}>Open COD orders</Text>
                 </View>
-
                 <View style={styles.codMetricBox}>
                   <Text style={[styles.codMetricValue, { color: colors.success }]}>
-                    ₹32,150
+                    {formatINR(payout?.cod_collected ?? 0)}
                   </Text>
-                  <Text style={styles.codMetricLabel}>COD Deposited to Bank</Text>
-                  <Text style={styles.codMetricHint}>Verified NEFT credited</Text>
+                  <Text style={styles.codMetricLabel}>COD collected</Text>
+                  <Text style={styles.codMetricHint}>Marked delivered with OTP</Text>
                 </View>
               </View>
 
-              {/* Driver Handover List */}
-              <Text style={styles.handoverHeading}>Driver COD Handover Log:</Text>
-              <View style={styles.handoverList}>
-                {COD_HANDOVERS.map((item) => (
-                  <View key={item.id} style={styles.handoverItem}>
-                    <View style={styles.handoverLeft}>
-                      <Text style={styles.driverNameText}>{item.driverName}</Text>
-                      <Text style={styles.driverVehicleText}>{item.vehicle}</Text>
-                      <Text style={styles.orderRefText}>Ref: {item.orderId}</Text>
-                    </View>
-
-                    <View style={styles.handoverRight}>
-                      <Text style={styles.handoverAmount}>₹{item.amount}</Text>
-                      <View
-                        style={[
-                          styles.statusPill,
-                          item.status === 'settled'
-                            ? styles.statusPillSettled
-                            : item.status === 'deposited'
-                            ? styles.statusPillDeposited
-                            : styles.statusPillPending,
-                        ]}>
-                        <Text
-                          style={[
-                            styles.statusPillText,
-                            item.status === 'settled'
-                              ? styles.statusTextSettled
-                              : item.status === 'deposited'
-                              ? styles.statusTextDeposited
-                              : styles.statusTextPending,
-                          ]}>
-                          {item.status === 'settled'
-                            ? 'Credited to Bank'
-                            : item.status === 'deposited'
-                            ? 'At Mandi Desk'
-                            : 'In Transit'}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            </Card>
-
-            {/* Connected Bank Account Details */}
-            <Card style={styles.bankCard}>
-              <View style={styles.bankHeaderRow}>
-                <View style={styles.bankIconBg}>
-                  <MaterialCommunityIcons name="bank" size={20} color={colors.primaryDark} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.bankTitle}>Direct Bank Settlement Account</Text>
-                  <Text style={styles.bankSubtitle}>
-                    State Bank of India (SBI) • Agritech Branch
-                  </Text>
-                </View>
-                <View style={styles.verifiedTag}>
-                  <MaterialCommunityIcons name="check-decagram" size={14} color={colors.primaryDark} />
-                  <Text style={styles.verifiedTagText}>Active</Text>
-                </View>
-              </View>
-
-              <View style={styles.accountNumberRow}>
-                <Text style={styles.accountNumberLabel}>Account:</Text>
-                <Text style={styles.accountNumberValue}>•••• •••• •••• 4891</Text>
-                <Text style={styles.ifscText}>IFSC: SBIN0001234</Text>
-              </View>
+              <Pressable onPress={() => refetchPayout()} style={{ marginTop: spacing.sm }}>
+                <Text style={[styles.codCardSubtitle, { color: colors.primaryDark }]}>Refresh</Text>
+              </Pressable>
             </Card>
           </>
         )}
-      </ScrollView>
+        </ScrollView>
+      )}
 
       {/* Reply Modal */}
       <Modal
@@ -497,8 +440,11 @@ export default function SellerReviewsScreen() {
                 onPress={() => setReplyModalReview(null)}>
                 <Text style={styles.modalCancelText}>Cancel</Text>
               </Pressable>
-              <Pressable style={styles.modalSaveBtn} onPress={handleSaveReply}>
-                <Text style={styles.modalSaveText}>Publish Reply</Text>
+              <Pressable
+                style={[styles.modalSaveBtn, isSavingReply && { opacity: 0.6 }]}
+                disabled={isSavingReply}
+                onPress={handleSaveReply}>
+                <Text style={styles.modalSaveText}>{isSavingReply ? 'Publishing…' : 'Publish Reply'}</Text>
               </Pressable>
             </View>
           </Pressable>

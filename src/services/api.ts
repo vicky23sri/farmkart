@@ -14,9 +14,21 @@ import { router } from 'expo-router';
 
 import { useAuthStore } from '@/store';
 
-// Default to LAN IP or localhost
-export const BASE_URL =
-  process.env.EXPO_PUBLIC_API_URL || 'https://37cf-117-222-152-64.ngrok-free.app';
+const getBaseUrl = (): string => {
+  const apiUrl = (process.env.EXPO_PUBLIC_API_URL || '').trim().replace(/\/+$/, '');
+  if (!apiUrl) {
+    // Fail loudly: a build without an API URL cannot work, and silently using '' hides it.
+    throw new Error(
+      '[API Client] EXPO_PUBLIC_API_URL is missing. Set it in .env (local) or in the eas.json build profile.'
+    );
+  }
+  if (!__DEV__ && !apiUrl.startsWith('https://')) {
+    console.warn('[API Client] Release build is using a non-HTTPS API URL. Use HTTPS in production.');
+  }
+  return apiUrl;
+};
+
+export const BASE_URL = getBaseUrl();
 
 export const apiClient = axios.create({
   baseURL: BASE_URL,
@@ -42,18 +54,28 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
+let isHandlingUnauthorized = false;
+
 // Response Interceptor: Handle 401 Unauthenticated and format friendly errors
 apiClient.interceptors.response.use(
   (response) => response.data,
   async (error: AxiosError<{ detail?: string | { msg: string }[]; message?: string }>) => {
-    // 1. Handle Token Expiry / 401 Unauthorized
-    if (error.response?.status === 401) {
-      console.warn('[API Client] 401 Unauthorized. Session expired, logging out.');
+    // 1. Handle Token Expiry / 401 Unauthorized (once, and never for the logout cleanup call itself)
+    const skipRedirect = Boolean((error.config as any)?.skipAuthRedirect);
+    if (
+      error.response?.status === 401 &&
+      !skipRedirect &&
+      !isHandlingUnauthorized &&
+      useAuthStore.getState().isLoggedIn
+    ) {
+      isHandlingUnauthorized = true;
       try {
         await useAuthStore.getState().logout();
         router.replace('/(auth)/login');
       } catch (logoutErr) {
         console.warn('[API Client] Error during auto-logout:', logoutErr);
+      } finally {
+        isHandlingUnauthorized = false;
       }
     }
 
@@ -62,17 +84,24 @@ apiClient.interceptors.response.use(
 
     if (error.response?.data) {
       const { detail, message } = error.response.data;
-      if (typeof detail === 'string') {
+      if (error.response.status >= 500) {
+        friendlyMessage = 'Something went wrong on our side. Please try again in a moment.';
+      } else if (typeof detail === 'string') {
         friendlyMessage = detail;
       } else if (Array.isArray(detail) && detail.length > 0) {
         // FastAPI / Pydantic validation error array
-        friendlyMessage = detail.map((d) => d.msg || JSON.stringify(d)).join(', ');
+        friendlyMessage = detail
+          .map((d) => (d.msg || '').replace(/^Value error, /, ''))
+          .filter(Boolean)
+          .join(', ') || 'Some of the details entered are invalid.';
       } else if (typeof message === 'string') {
         friendlyMessage = message;
       }
     } else if (error.message) {
       if (error.message.includes('Network Error')) {
-        friendlyMessage = `Cannot connect to server at ${BASE_URL}. Check your Wi-Fi and backend status.`;
+        friendlyMessage = __DEV__
+          ? `Cannot connect to server at ${BASE_URL}. Check your Wi-Fi and backend status.`
+          : 'Cannot connect to FarmKart. Please check your internet connection and try again.';
       } else if (error.message.includes('timeout')) {
         friendlyMessage = 'Request timed out. Please check your internet connection.';
       } else {

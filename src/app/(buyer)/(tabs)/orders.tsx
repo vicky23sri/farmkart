@@ -2,21 +2,22 @@
  * Buyer Orders Tab Screen
  * Features:
  * - AppHeader on top with cart badge and title
- * - 4 segmented tabs: Ongoing, Delivered, Cancelled, Returns with count badges
- * - Full integration with shared useOrderStore
- * - Order cards with items, farmer profile, status chips, and quick actions
- * - Links to Order Detail and Live Order Tracking
- * - Return request and cancellation actions
+ * - 3 segmented tabs: Ongoing, Delivered, Cancelled (server-side filtered & paginated)
+ * - Order cards with items, farmer, status chips, and quick actions
+ * - Links to Order Detail and Order Tracking
+ * - Cancellation before the farmer confirms
  */
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  FlatList,
   Image,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -26,67 +27,63 @@ import { AppHeader } from '@/components/AppHeader';
 import { Card } from '@/components/Card';
 import { EmptyState } from '@/components/EmptyState';
 import { StatusChip } from '@/components/StatusChip';
+import { invalidateOrderQueries, orderService } from '@/services/orderService';
 import {
   Order,
   OrderTab,
   useCartStore,
   useLanguageStore,
-  useOrderStore,
 } from '@/store';
 import { colors, fontSizes, spacing } from '@/theme';
 
 export default function BuyerOrdersScreen() {
   const { language } = useLanguageStore();
   const { getTotalCount } = useCartStore();
-  const { orders, cancelOrder, requestReturn } = useOrderStore();
+  const queryClient = useQueryClient();
 
   const [activeTab, setActiveTab] = useState<OrderTab>('ongoing');
 
-  // Filter orders by active tab
-  const currentOrders = orders.filter((o) => o.tab === activeTab);
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    isFetchingNextPage,
+    hasNextPage,
+    fetchNextPage,
+    refetch,
+    isRefetching,
+  } = useInfiniteQuery({
+    queryKey: ['buyer-my-orders-infinite', activeTab],
+    queryFn: ({ pageParam = 0 }) => orderService.getMyOrders(activeTab, 20, pageParam),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => {
+      const nextOffset = lastPage.offset + lastPage.limit;
+      return nextOffset < lastPage.total ? nextOffset : undefined;
+    },
+    refetchInterval: 30000,
+  });
 
-  // Tab counts
-  const countOngoing = orders.filter((o) => o.tab === 'ongoing').length;
-  const countDelivered = orders.filter((o) => o.tab === 'delivered').length;
-  const countCancelled = orders.filter((o) => o.tab === 'cancelled').length;
-  const countReturns = orders.filter((o) => o.tab === 'returns').length;
+  const displayOrders = useMemo(() => data?.pages.flatMap((page) => page.items) ?? [], [data]);
+  const activeTotal = data?.pages[0]?.total ?? 0;
 
   const handleCancel = (order: Order) => {
-    Alert.alert(
-      'Cancel Order',
-      `Are you sure you want to cancel order ${order.id}?`,
-      [
-        { text: 'No, Keep Order', style: 'cancel' },
-        {
-          text: 'Yes, Cancel',
-          style: 'destructive',
-          onPress: () => {
-            cancelOrder(order.id, 'Cancelled by buyer');
-            Alert.alert('Order Cancelled', `Order ${order.id} has been cancelled.`);
-          },
+    Alert.alert('Cancel Order', `Are you sure you want to cancel order #${order.id}?`, [
+      { text: 'No, Keep Order', style: 'cancel' },
+      {
+        text: 'Yes, Cancel',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await orderService.cancelOrder(order.id);
+            invalidateOrderQueries(queryClient, order.id);
+            Alert.alert('Order Cancelled', `Order #${order.id} has been cancelled.`);
+          } catch (err: any) {
+            Alert.alert('Could not cancel', err?.message || 'Please try again.');
+          }
         },
-      ]
-    );
-  };
-
-  const handleReturn = (order: Order) => {
-    Alert.alert(
-      'Request Return',
-      `Submit a return request for ${order.id}? Farmer will arrange pickup or refund.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Request Return',
-          onPress: () => {
-            requestReturn(order.id, 'Quality verification return');
-            Alert.alert(
-              'Return Requested',
-              `Return request for ${order.id} submitted successfully.`
-            );
-          },
-        },
-      ]
-    );
+      },
+    ]);
   };
 
   return (
@@ -99,34 +96,13 @@ export default function BuyerOrdersScreen() {
         onSearchPress={() => router.push('/(buyer)/products')}
       />
 
-      {/* 4 Segmented Tabs: Ongoing, Delivered, Cancelled, Returns */}
+      {/* Segmented Tabs: Ongoing, Delivered, Cancelled */}
       <View style={styles.tabsBar}>
         {[
-          {
-            id: 'ongoing' as OrderTab,
-            label: 'Ongoing',
-            labelTa: 'விநியோகத்தில்',
-            count: countOngoing,
-          },
-          {
-            id: 'delivered' as OrderTab,
-            label: 'Delivered',
-            labelTa: 'முடிந்தவை',
-            count: countDelivered,
-          },
-          {
-            id: 'cancelled' as OrderTab,
-            label: 'Cancelled',
-            labelTa: 'ரத்து',
-            count: countCancelled,
-          },
-          {
-            id: 'returns' as OrderTab,
-            label: 'Returns',
-            labelTa: 'திரும்பல்',
-            count: countReturns,
-          },
-        ].map((tab) => {
+          { id: 'ongoing' as OrderTab, label: 'Ongoing', labelTa: 'விநியோகத்தில்' },
+          { id: 'delivered' as OrderTab, label: 'Delivered', labelTa: 'முடிந்தவை' },
+          { id: 'cancelled' as OrderTab, label: 'Cancelled', labelTa: 'ரத்து' },
+        ].map((t) => ({ ...t, count: t.id === activeTab ? activeTotal : 0 })).map((tab) => {
           const isActive = activeTab === tab.id;
           return (
             <Pressable
@@ -158,16 +134,26 @@ export default function BuyerOrdersScreen() {
       </View>
 
       {/* Orders List / Empty State */}
-      {currentOrders.length === 0 ? (
+      {isLoading ? (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator size="large" color={colors.primary} />
+        </View>
+      ) : isError && displayOrders.length === 0 ? (
+        <EmptyState
+          title="Could not load orders"
+          description={(error as Error)?.message || 'Please check your connection and try again.'}
+          icon="wifi-off"
+          actionLabel="Retry"
+          onAction={() => refetch()}
+        />
+      ) : displayOrders.length === 0 ? (
         <EmptyState
           title={
             activeTab === 'ongoing'
               ? 'No Ongoing Orders'
               : activeTab === 'delivered'
               ? 'No Delivered Orders Yet'
-              : activeTab === 'cancelled'
-              ? 'No Cancelled Orders'
-              : 'No Returns Requested'
+              : 'No Cancelled Orders'
           }
           description={
             activeTab === 'ongoing'
@@ -179,10 +165,27 @@ export default function BuyerOrdersScreen() {
           onAction={() => router.push('/(buyer)/(tabs)')}
         />
       ) : (
-        <ScrollView
+        <FlatList
+          data={displayOrders}
+          keyExtractor={(item) => item.id}
           contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}>
-          {currentOrders.map((order) => {
+          showsVerticalScrollIndicator={false}
+          onEndReached={() => {
+            if (hasNextPage && !isFetchingNextPage) {
+              fetchNextPage();
+            }
+          }}
+          onEndReachedThreshold={0.4}
+          refreshing={isRefetching}
+          onRefresh={refetch}
+          ListFooterComponent={
+            isFetchingNextPage ? (
+              <View style={{ paddingVertical: spacing.md, alignItems: 'center' }}>
+                <ActivityIndicator size="small" color={colors.primary} />
+              </View>
+            ) : undefined
+          }
+          renderItem={({ item: order }) => {
             const isOngoing = order.tab === 'ongoing';
             const isDelivered = order.tab === 'delivered';
             const firstItem = order.items[0];
@@ -200,8 +203,7 @@ export default function BuyerOrdersScreen() {
                     variant={
                       order.status === 'delivered'
                         ? 'success'
-                        : order.status === 'cancelled' ||
-                          order.status === 'returned'
+                        : order.status === 'cancelled' || order.status === 'rejected'
                         ? 'error'
                         : 'info'
                     }
@@ -216,7 +218,7 @@ export default function BuyerOrdersScreen() {
                     color={colors.primary}
                   />
                   <Text style={styles.farmerNameText}>
-                    {order.sellerName} • {order.sellerFarm}
+                    {order.sellerName}
                   </Text>
                 </View>
 
@@ -239,7 +241,7 @@ export default function BuyerOrdersScreen() {
                         : `${firstItem?.quantity} ${firstItem?.unit}`}
                     </Text>
                     <Text style={styles.deliverySlotTag}>
-                      Slot: {order.deliverySlot}
+                      {order.paymentMode === 'cod' ? 'Cash on Delivery' : 'UPI'} • {order.orderDate}
                     </Text>
                   </View>
 
@@ -295,7 +297,7 @@ export default function BuyerOrdersScreen() {
                     </Pressable>
                   )}
 
-                  {/* Delivered: Rate & Review and Return */}
+                  {/* Delivered: Rate & Review */}
                   {isDelivered && (
                     <>
                       <Pressable
@@ -305,38 +307,17 @@ export default function BuyerOrdersScreen() {
                             params: { orderId: order.id },
                           })
                         }
-                        style={order.isReviewed ? styles.reviewedBtn : styles.rateBtn}>
-                        <MaterialCommunityIcons
-                          name="star"
-                          size={13}
-                          color={order.isReviewed ? colors.primaryDark : colors.white}
-                        />
-                        <Text
-                          style={
-                            order.isReviewed
-                              ? styles.reviewedBtnText
-                              : styles.rateBtnText
-                          }>
-                          {order.isReviewed
-                            ? language === 'ta'
-                              ? 'மதிப்பிடப்பட்டது'
-                              : 'Reviewed'
-                            : language === 'ta'
-                            ? 'மதிப்பிட'
-                            : 'Rate & Review'}
+                        style={styles.rateBtn}>
+                        <MaterialCommunityIcons name="star" size={13} color={colors.white} />
+                        <Text style={styles.rateBtnText}>
+                          {language === 'ta' ? 'மதிப்பிட' : 'Rate & Review'}
                         </Text>
-                      </Pressable>
-
-                      <Pressable
-                        onPress={() => handleReturn(order)}
-                        style={styles.returnBtn}>
-                        <Text style={styles.returnBtnText}>Return</Text>
                       </Pressable>
                     </>
                   )}
 
-                  {/* Placed: Cancel Order */}
-                  {order.status === 'placed' && (
+                  {/* Before farmer confirmation: Cancel Order */}
+                  {(order.status === 'placed' || order.status === 'pending_seller_approval') && (
                     <Pressable
                       onPress={() => handleCancel(order)}
                       style={styles.cancelBtn}>
@@ -346,8 +327,8 @@ export default function BuyerOrdersScreen() {
                 </View>
               </Card>
             );
-          })}
-        </ScrollView>
+          }}
+        />
       )}
     </View>
   );

@@ -1,16 +1,20 @@
 /**
  * Seller Orders Screen
  * Order fulfillment management for incoming harvest orders from buyers:
- * - 4 Tabs: New, Packed, Shipped, Delivered with real-time numeric badges
- * - Accept / Reject actions on new orders
- * - "Update Status" progression that directly updates shared useOrderStore
- * - Dark green header with "Seller Mode" pill
+ * - Tabs: Needs Approval, New, Packed, Shipped, Delivered
+ * - Accept / Reject actions on new and extended-distance orders
+ * - Status progression via the API; delivery requires the buyer's handover OTP
+ * - UPI payment confirmation / rejection
  */
 
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  FlatList,
+  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -23,12 +27,11 @@ import {
 import { AppHeader } from '@/components/AppHeader';
 import { Card } from '@/components/Card';
 import { StatusChip } from '@/components/StatusChip';
-import { orderService } from '@/services';
+import { invalidateOrderQueries, orderService } from '@/services/orderService';
 import {
   Order,
   OrderStatus,
   useLanguageStore,
-  useOrderStore,
 } from '@/store';
 import { colors, fontSizes, shadows, spacing } from '@/theme';
 
@@ -36,189 +39,265 @@ type SellerOrderTab = 'needs_approval' | 'new' | 'packed' | 'shipped' | 'deliver
 
 export default function SellerOrdersScreen() {
   const { language } = useLanguageStore();
-  const { orders, updateOrderStatus, cancelOrder } = useOrderStore();
+  const queryClient = useQueryClient();
 
   const [activeTab, setActiveTab] = useState<SellerOrderTab>('needs_approval');
 
-  // Modal states for Approval & Rejection of extended-distance orders
+  // Modal states for Approval & Rejection
   const [approvingOrder, setApprovingOrder] = useState<Order | null>(null);
   const [extraFee, setExtraFee] = useState<string>('0');
   const [sellerNote, setSellerNote] = useState<string>('');
   const [rejectingOrder, setRejectingOrder] = useState<Order | null>(null);
   const [rejectionReason, setRejectionReason] = useState<string>('');
 
-  // Filter orders by seller tabs
-  const tabOrders = useMemo(() => {
-    switch (activeTab) {
+  // Delivery handover OTP
+  const [deliveringOrder, setDeliveringOrder] = useState<Order | null>(null);
+  const [deliveryOtpInput, setDeliveryOtpInput] = useState<string>('');
+
+  // UPI payment confirmation and rejection states
+  const [rejectingPaymentOrder, setRejectingPaymentOrder] = useState<Order | null>(null);
+  const [paymentRejectReason, setPaymentRejectReason] = useState<string>('');
+  const [isProcessingPayment, setIsProcessingPayment] = useState<boolean>(false);
+  const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
+
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    isFetchingNextPage,
+    hasNextPage,
+    fetchNextPage,
+    refetch,
+    isRefetching,
+  } = useInfiniteQuery({
+    queryKey: ['seller-my-orders-infinite'],
+    queryFn: ({ pageParam = 0 }) => orderService.getMyOrders('all', 50, pageParam),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => {
+      const nextOffset = lastPage.offset + lastPage.limit;
+      return nextOffset < lastPage.total ? nextOffset : undefined;
+    },
+    refetchInterval: 30000,
+  });
+
+  const sourceOrders = useMemo(() => data?.pages.flatMap((page) => page.items) ?? [], [data]);
+
+  const matchesTab = (o: Order, tab: SellerOrderTab): boolean => {
+    switch (tab) {
       case 'needs_approval':
-        return orders.filter(
-          (o) =>
-            o.status === 'pending_seller_approval' ||
-            o.status === 'awaiting_buyer_confirmation' ||
-            (o as any).isExtendedDelivery ||
-            (o.status === 'placed' &&
-              Number((o as any).distanceKm || (o as any).distance || 0) > 50)
-        );
+        return o.status === 'pending_seller_approval' || o.status === 'awaiting_buyer_confirmation';
       case 'new':
-        return orders.filter(
-          (o) =>
-            o.status === 'placed' &&
-            !(
-              (o as any).isExtendedDelivery ||
-              Number((o as any).distanceKm || (o as any).distance || 0) > 50
-            )
-        );
+        return o.status === 'placed';
       case 'packed':
-        return orders.filter((o) => o.status === 'confirmed' || o.status === 'packed');
+        return o.status === 'confirmed' || o.status === 'packed';
       case 'shipped':
-        return orders.filter((o) => o.status === 'shipped' || o.status === 'out_for_delivery');
+        return o.status === 'shipped' || o.status === 'out_for_delivery';
       case 'delivered':
-        return orders.filter((o) => o.status === 'delivered');
+        return o.status === 'delivered';
       default:
-        return orders;
+        return true;
     }
-  }, [orders, activeTab]);
+  };
 
-  // Tab counts
-  const countNeedsApproval = orders.filter(
-    (o) =>
-      o.status === 'pending_seller_approval' ||
-      o.status === 'awaiting_buyer_confirmation' ||
-      (o as any).isExtendedDelivery ||
-      (o.status === 'placed' &&
-        Number((o as any).distanceKm || (o as any).distance || 0) > 50)
-  ).length;
-  const countNew = orders.filter(
-    (o) =>
-      o.status === 'placed' &&
-      !(
-        (o as any).isExtendedDelivery ||
-        Number((o as any).distanceKm || (o as any).distance || 0) > 50
-      )
-  ).length;
-  const countPacked = orders.filter((o) => o.status === 'confirmed' || o.status === 'packed').length;
-  const countShipped = orders.filter(
-    (o) => o.status === 'shipped' || o.status === 'out_for_delivery'
-  ).length;
-  const countDelivered = orders.filter((o) => o.status === 'delivered').length;
+  const tabOrders = sourceOrders.filter((o) => matchesTab(o, activeTab));
+  const countNeedsApproval = sourceOrders.filter((o) => matchesTab(o, 'needs_approval')).length;
+  const countNew = sourceOrders.filter((o) => matchesTab(o, 'new')).length;
+  const countPacked = sourceOrders.filter((o) => matchesTab(o, 'packed')).length;
+  const countShipped = sourceOrders.filter((o) => matchesTab(o, 'shipped')).length;
+  const countDelivered = sourceOrders.filter((o) => matchesTab(o, 'delivered')).length;
 
-  // Accept Regular Order Handler
-  const handleAcceptOrder = async (order: Order) => {
+  /** Runs an order mutation, refreshes every order view, and surfaces real errors. */
+  const runOrderAction = async (
+    order: Order,
+    action: () => Promise<unknown>,
+    successTitle: string,
+    successMessage: string
+  ): Promise<boolean> => {
+    setBusyOrderId(order.id);
     try {
-      await orderService.updateStatus(order.id, 'confirmed');
-    } catch {
-      // Fallback to local store
+      await action();
+      invalidateOrderQueries(queryClient, order.id);
+      Alert.alert(successTitle, successMessage);
+      return true;
+    } catch (err: any) {
+      Alert.alert(language === 'ta' ? 'பிழை' : 'Action failed', err?.message || 'Please try again.');
+      return false;
+    } finally {
+      setBusyOrderId(null);
     }
-    updateOrderStatus(order.id, 'confirmed');
-    Alert.alert(
+  };
+
+  // Accept Regular Order Handler (placed -> confirmed)
+  const handleAcceptOrder = (order: Order) =>
+    runOrderAction(
+      order,
+      () => orderService.approveOrder(order.id, 0),
       language === 'ta' ? 'ஆர்டர் ஏற்றுக்கொள்ளப்பட்டது' : 'Order Accepted',
       language === 'ta'
-        ? `ஆர்டர் ${order.id} உறுதி செய்யப்பட்டது. அறுவடை மற்றும் பேக்கிங் செய்ய தொடங்குங்கள்.`
-        : `Order ${order.id} has been confirmed. Schedule harvesting and packing.`
+        ? `ஆர்டர் #${order.id} உறுதி செய்யப்பட்டது. அறுவடை மற்றும் பேக்கிங் செய்ய தொடங்குங்கள்.`
+        : `Order #${order.id} has been confirmed. Schedule harvesting and packing.`
+    );
+
+  // Reject Order: always ask for a reason the buyer will see
+  const handleRejectOrder = (order: Order) => {
+    setRejectingOrder(order);
+    setRejectionReason('');
+  };
+
+  // Submit Approval for Extended Order with Extra Fee & Note
+  const handleConfirmApproval = async () => {
+    if (!approvingOrder) return;
+    const feeNum = Number.parseFloat(extraFee);
+    if (extraFee.trim() && (!Number.isFinite(feeNum) || feeNum < 0)) {
+      Alert.alert('Invalid fee', 'Please enter a valid transport fee (0 or more).');
+      return;
+    }
+    const fee = Number.isFinite(feeNum) ? feeNum : 0;
+    const ok = await runOrderAction(
+      approvingOrder,
+      () => orderService.approveOrder(approvingOrder.id, fee, sellerNote.trim() || undefined),
+      'Order Approved',
+      fee > 0
+        ? `Delivery approved with extra fee ₹${fee}. Awaiting buyer confirmation.`
+        : 'Delivery approved at the standard rate. Order is confirmed.'
+    );
+    if (ok) {
+      setApprovingOrder(null);
+      setExtraFee('0');
+      setSellerNote('');
+    }
+  };
+
+  // Submit Rejection with Reason
+  const handleConfirmRejection = async () => {
+    if (!rejectingOrder) return;
+    const reason = rejectionReason.trim();
+    if (reason.length < 3) {
+      Alert.alert('Reason required', 'Please tell the buyer why you cannot fulfil this order.');
+      return;
+    }
+    const ok = await runOrderAction(
+      rejectingOrder,
+      () => orderService.rejectOrder(rejectingOrder.id, reason),
+      'Order Rejected',
+      `Order #${rejectingOrder.id} has been rejected. The buyer has been notified.`
+    );
+    if (ok) {
+      setRejectingOrder(null);
+      setRejectionReason('');
+    }
+  };
+
+  // Status Progression Handler
+  const handleAdvanceStatus = async (order: Order) => {
+    const next: Record<string, { status: 'packed' | 'shipped' | 'out_for_delivery' | 'delivered'; label: string }> = {
+      confirmed: { status: 'packed', label: 'Harvested & Packed' },
+      packed: { status: 'shipped', label: 'Shipped from Farm' },
+      shipped: { status: 'out_for_delivery', label: 'Out for Delivery' },
+      out_for_delivery: { status: 'delivered', label: 'Delivered' },
+    };
+    const step = next[order.status];
+    if (!step) return;
+
+    if (step.status === 'delivered') {
+      // Handover must be verified with the buyer's OTP
+      setDeliveringOrder(order);
+      setDeliveryOtpInput('');
+      return;
+    }
+
+    await runOrderAction(
+      order,
+      () => orderService.updateStatus(order.id, step.status),
+      language === 'ta' ? 'நிலை மாற்றப்பட்டது' : 'Order Status Updated',
+      language === 'ta'
+        ? `ஆர்டர் #${order.id} "${step.label}" என மாற்றப்பட்டது.`
+        : `Order #${order.id} updated to "${step.label}". The buyer has been notified.`
     );
   };
 
-  // Reject Regular Order Handler
-  const handleRejectOrder = (order: Order) => {
+  const handleConfirmDelivery = async () => {
+    if (!deliveringOrder) return;
+    const otp = deliveryOtpInput.trim();
+    if (!/^\d{6}$/.test(otp)) {
+      Alert.alert('Enter OTP', "Enter the 6-digit delivery OTP shown in the buyer's app.");
+      return;
+    }
+    const ok = await runOrderAction(
+      deliveringOrder,
+      () => orderService.updateStatus(deliveringOrder.id, 'delivered', { deliveryOtp: otp }),
+      language === 'ta' ? 'விநியோகம் முடிந்தது' : 'Delivered',
+      `Order #${deliveringOrder.id} has been marked as delivered.`
+    );
+    if (ok) {
+      setDeliveringOrder(null);
+      setDeliveryOtpInput('');
+    }
+  };
+
+  const handleCallBuyer = (order: Order) => {
+    if (!order.buyerPhone) return;
+    Linking.openURL(`tel:${order.buyerPhone}`).catch(() =>
+      Alert.alert('Unable to call', `Please call ${order.buyerPhone} from your phone.`)
+    );
+  };
+
+  const handleConfirmPayment = (order: Order) => {
     Alert.alert(
-      language === 'ta' ? 'ஆர்டரை நிராகரிக்கவா?' : 'Reject Order?',
+      language === 'ta' ? 'கட்டணத்தை உறுதிப்படுத்து' : 'Confirm UPI Payment',
       language === 'ta'
-        ? `காரணம்: கையிருப்பு பற்றாக்குறை அல்லது விநியோக தூரம் அதிகம். ${order.id} நிராகரிக்கவா?`
-        : `Are you sure you want to reject order ${order.id}? Buyer will be notified immediately.`,
+        ? `வாங்குபவரின் UTR (${order.upiUtr || 'N/A'}) உங்கள் வங்கிக் கணக்கில் ₹${order.grandTotal} வரவு வைக்கப்பட்டுள்ளதா?`
+        : `Have you verified receipt of ₹${order.grandTotal} with UTR ${order.upiUtr || 'N/A'} in your bank account?`,
       [
         { text: language === 'ta' ? 'ரத்து' : 'Cancel', style: 'cancel' },
         {
-          text: language === 'ta' ? 'நிராகரி' : 'Reject Order',
-          style: 'destructive',
+          text: language === 'ta' ? 'ஆம், பெறப்பட்டது' : 'Yes, Confirmed',
           onPress: async () => {
-            try {
-              await orderService.rejectOrder(order.id, 'Rejected by farmer due to field constraints');
-            } catch {
-              // fallback
-            }
-            cancelOrder(order.id, 'Rejected by farmer due to field constraints');
-            Alert.alert(
-              language === 'ta' ? 'ஆர்டர் ரத்து செய்யப்பட்டது' : 'Order Rejected',
-              `Order ${order.id} has been rejected.`
+            setIsProcessingPayment(true);
+            await runOrderAction(
+              order,
+              () => orderService.confirmPayment(order.id),
+              language === 'ta' ? 'வெற்றி' : 'Payment Confirmed',
+              language === 'ta'
+                ? 'கட்டணம் வெற்றிகரமாக உறுதிப்படுத்தப்பட்டது!'
+                : 'Payment confirmed. Order marked as paid.'
             );
+            setIsProcessingPayment(false);
           },
         },
       ]
     );
   };
 
-  // Submit Approval for Extended Order with Extra Fee & Note
-  const handleConfirmApproval = async () => {
-    if (!approvingOrder) return;
-    const feeNum = parseFloat(extraFee) || 0;
-    try {
-      await orderService.approveOrder(approvingOrder.id, feeNum, sellerNote);
-    } catch {
-      // fallback
-    }
-    const nextSt = feeNum > 0 ? 'awaiting_buyer_confirmation' : 'confirmed';
-    updateOrderStatus(approvingOrder.id, nextSt as any);
-
-    Alert.alert(
-      'Order Approved',
-      feeNum > 0
-        ? `Delivery approved with extra fee ₹${feeNum}. Awaiting buyer confirmation.`
-        : `Delivery approved at standard rate. Order is confirmed.`
-    );
-    setApprovingOrder(null);
-    setExtraFee('0');
-    setSellerNote('');
+  const handleOpenRejectPayment = (order: Order) => {
+    setRejectingPaymentOrder(order);
+    setPaymentRejectReason('');
   };
 
-  // Submit Rejection for Extended Order with Reason
-  const handleConfirmRejection = async () => {
-    if (!rejectingOrder) return;
-    const reason = rejectionReason.trim() || 'Seller cannot deliver to this extended distance';
-    try {
-      await orderService.rejectOrder(rejectingOrder.id, reason);
-    } catch {
-      // fallback
+  const handleSubmitRejectPayment = async () => {
+    if (!rejectingPaymentOrder) return;
+    const cleanReason = paymentRejectReason.trim();
+    if (cleanReason.length < 2) {
+      Alert.alert(
+        language === 'ta' ? 'காரணம் தேவை' : 'Reason Required',
+        language === 'ta'
+          ? 'தயவுசெய்து நிராகரிப்புக்கான காரணத்தை உள்ளிடவும் (எ.கா. வங்கி கணக்கில் பணம் வரவு வைக்கப்படவில்லை).'
+          : 'Please enter a reason for rejecting the payment (e.g. UTR not found in bank statement).'
+      );
+      return;
     }
-    cancelOrder(rejectingOrder.id, reason);
-    Alert.alert('Order Rejected', `Order ${rejectingOrder.id} has been rejected with reason: "${reason}".`);
-    setRejectingOrder(null);
-    setRejectionReason('');
-  };
-
-  // Status Progression Handler
-  const handleAdvanceStatus = async (order: Order) => {
-    let nextStatus: OrderStatus | null = null;
-    let nextActionLabel = '';
-
-    if (order.status === 'confirmed') {
-      nextStatus = 'packed';
-      nextActionLabel = 'Harvested & Packed';
-    } else if (order.status === 'packed') {
-      nextStatus = 'shipped';
-      nextActionLabel = 'Shipped from Farm';
-    } else if (order.status === 'shipped') {
-      nextStatus = 'out_for_delivery';
-      nextActionLabel = 'Out for Delivery';
-    } else if (order.status === 'out_for_delivery') {
-      nextStatus = 'delivered';
-      nextActionLabel = 'Delivered at Doorstep';
-    }
-
-    if (!nextStatus) return;
-
-    try {
-      await orderService.updateStatus(order.id, nextStatus);
-    } catch {
-      // fallback
-    }
-    updateOrderStatus(order.id, nextStatus);
-
-    Alert.alert(
-      language === 'ta' ? 'நிலை மாற்றப்பட்டது' : 'Order Status Updated',
+    setIsProcessingPayment(true);
+    const ok = await runOrderAction(
+      rejectingPaymentOrder,
+      () => orderService.rejectPayment(rejectingPaymentOrder.id, cleanReason),
+      language === 'ta' ? 'நிராகரிக்கப்பட்டது' : 'Payment Rejected',
       language === 'ta'
-        ? `ஆர்டர் ${order.id} "${nextActionLabel}" என மாற்றப்பட்டது. வாங்குபவரின் நேரலை திரையில் இது உடனடியாக பிரதிபலிக்கும்.`
-        : `Order ${order.id} updated to "${nextActionLabel}". Buyer's live tracking screen is updated in real time!`
+        ? 'கட்டணம் நிராகரிக்கப்பட்டது. வாங்குபவர் மீண்டும் சரியான UTR சமர்ப்பிக்கலாம்.'
+        : 'Payment rejected. The buyer can review the reason and resubmit a valid UTR.'
     );
+    setIsProcessingPayment(false);
+    if (ok) setRejectingPaymentOrder(null);
   };
 
   // Button Label Helper
@@ -321,10 +400,38 @@ export default function SellerOrdersScreen() {
         </ScrollView>
       </View>
 
-      <ScrollView
+      <FlatList
+        data={tabOrders}
+        keyExtractor={(item) => item.id}
         contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}>
-        {tabOrders.length === 0 ? (
+        showsVerticalScrollIndicator={false}
+        onEndReached={() => {
+          if (hasNextPage && !isFetchingNextPage) {
+            fetchNextPage();
+          }
+        }}
+        onEndReachedThreshold={0.4}
+        refreshing={isRefetching}
+        onRefresh={refetch}
+        ListFooterComponent={
+          isFetchingNextPage ? (
+            <View style={{ paddingVertical: spacing.md, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={colors.primary} />
+            </View>
+          ) : undefined
+        }
+        ListEmptyComponent={
+          isLoading ? (
+            <View style={{ paddingVertical: spacing.xl, alignItems: 'center' }}>
+              <ActivityIndicator size="large" color={colors.primary} />
+            </View>
+          ) : isError ? (
+            <Card style={styles.emptyCard}>
+              <MaterialCommunityIcons name="wifi-off" size={48} color={colors.error} />
+              <Text style={styles.emptyTitle}>Could not load orders</Text>
+              <Text style={styles.emptySubtitle}>{(error as Error)?.message || 'Pull down to retry.'}</Text>
+            </Card>
+          ) : (
           <Card style={styles.emptyCard}>
             <MaterialCommunityIcons
               name="clipboard-text-clock-outline"
@@ -338,12 +445,13 @@ export default function SellerOrdersScreen() {
               Orders matching this dispatch stage will appear here automatically.
             </Text>
           </Card>
-        ) : (
-          tabOrders.map((order) => {
-            const nextAction = getNextActionConfig(order.status);
+          )
+        }
+        renderItem={({ item: order }) => {
+          const nextAction = getNextActionConfig(order.status);
             const isNew = order.status === 'placed';
+            const isBusy = busyOrderId === order.id;
             const isNeedsApproval =
-              activeTab === 'needs_approval' ||
               order.status === 'pending_seller_approval' ||
               order.status === 'awaiting_buyer_confirmation';
             const distanceVal = Number(
@@ -418,7 +526,15 @@ export default function SellerOrdersScreen() {
                       color={colors.primaryDark}
                     />
                     <Text style={styles.buyerNameText}>{order.buyerName}</Text>
-                    <Text style={styles.buyerPhoneText}>{order.buyerPhone}</Text>
+                    {order.buyerPhone ? (
+                      <Pressable
+                        onPress={() => handleCallBuyer(order)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Call ${order.buyerName}`}
+                        hitSlop={8}>
+                        <Text style={styles.buyerPhoneText}>📞 {order.buyerPhone}</Text>
+                      </Pressable>
+                    ) : null}
                   </View>
 
                   <View style={styles.addressRow}>
@@ -432,14 +548,16 @@ export default function SellerOrdersScreen() {
                     </Text>
                   </View>
 
-                  <View style={styles.slotRow}>
-                    <MaterialCommunityIcons
-                      name="clock-time-four-outline"
-                      size={14}
-                      color={colors.accent}
-                    />
-                    <Text style={styles.slotText}>Slot: {order.deliverySlot}</Text>
-                  </View>
+                  {order.deliveryNotes ? (
+                    <View style={styles.slotRow}>
+                      <MaterialCommunityIcons
+                        name="note-text-outline"
+                        size={14}
+                        color={colors.accent}
+                      />
+                      <Text style={styles.slotText}>{order.deliveryNotes}</Text>
+                    </View>
+                  ) : null}
                 </View>
 
                 {/* Items Summary */}
@@ -465,7 +583,7 @@ export default function SellerOrdersScreen() {
                 <View style={styles.totalRow}>
                   <View style={styles.paymentModePill}>
                     <MaterialCommunityIcons
-                      name={order.paymentMode === 'cod' ? 'cash-multiple' : 'credit-card-check'}
+                      name={order.paymentMode === 'cod' ? 'cash-multiple' : 'qrcode-scan'}
                       size={14}
                       color={order.paymentMode === 'cod' ? '#E65100' : colors.primaryDark}
                     />
@@ -475,8 +593,8 @@ export default function SellerOrdersScreen() {
                         order.paymentMode === 'cod' && { color: '#E65100' },
                       ]}>
                       {order.paymentMode === 'cod'
-                        ? 'COD (Collect on Delivery)'
-                        : 'Paid Online (UPI)'}
+                        ? 'Cash on Delivery (COD)'
+                        : 'Direct UPI'}
                     </Text>
                   </View>
 
@@ -485,6 +603,81 @@ export default function SellerOrdersScreen() {
                     <Text style={styles.totalValue}>₹{order.grandTotal}</Text>
                   </View>
                 </View>
+
+                {/* Direct UPI Verification Section for Seller */}
+                {order.paymentMode === 'upi' && (
+                  <View style={styles.upiCardSection}>
+                    {order.paymentStatus === 'submitted' && (
+                      <View style={styles.upiSubmittedCard}>
+                        <View style={styles.upiSubmittedHeader}>
+                          <View style={styles.upiIconBg}>
+                            <MaterialCommunityIcons name="shield-check" size={18} color="#1565C0" />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.upiSubmittedTitle}>
+                              {language === 'ta' ? 'வாங்குபவர் UTR சமர்ப்பித்துள்ளார்' : 'UPI Payment Submitted'}
+                            </Text>
+                            <Text style={styles.upiUtrNumberText}>
+                              UTR: <Text style={styles.upiUtrBold}>{order.upiUtr || 'N/A'}</Text>
+                            </Text>
+                          </View>
+                        </View>
+
+                        {/* Confirm / Reject Buttons for Seller */}
+                        <View style={styles.upiActionRow}>
+                          <Pressable
+                            style={styles.upiRejectBtn}
+                            onPress={() => handleOpenRejectPayment(order)}
+                            disabled={isProcessingPayment}>
+                            <MaterialCommunityIcons name="close-circle" size={16} color={colors.error} />
+                            <Text style={styles.upiRejectBtnText}>
+                              {language === 'ta' ? 'நிராகரி' : 'Reject'}
+                            </Text>
+                          </Pressable>
+
+                          <Pressable
+                            style={styles.upiConfirmBtn}
+                            onPress={() => handleConfirmPayment(order)}
+                            disabled={isProcessingPayment}>
+                            <MaterialCommunityIcons name="check-circle" size={16} color={colors.white} />
+                            <Text style={styles.upiConfirmBtnText}>
+                              {language === 'ta' ? 'கட்டணத்தை உறுதிப்படுத்து' : 'Confirm Payment'}
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    )}
+
+                    {order.paymentStatus === 'paid' && (
+                      <View style={styles.upiPaidPill}>
+                        <MaterialCommunityIcons name="check-decagram" size={16} color={colors.success} />
+                        <Text style={styles.upiPaidText}>
+                          {language === 'ta' ? 'UPI கட்டணம் உறுதி செய்யப்பட்டது' : 'UPI Payment Confirmed'}
+                          {order.upiUtr ? ` • UTR: ${order.upiUtr}` : ''}
+                        </Text>
+                      </View>
+                    )}
+
+                    {order.paymentStatus === 'rejected' && (
+                      <View style={styles.upiRejectedPill}>
+                        <MaterialCommunityIcons name="alert-circle-outline" size={16} color={colors.error} />
+                        <Text style={styles.upiRejectedText}>
+                          {language === 'ta' ? 'கட்டணம் நிராகரிக்கப்பட்டது' : 'Payment Rejected'}
+                          {order.paymentRejectedReason ? `: ${order.paymentRejectedReason}` : ''}
+                        </Text>
+                      </View>
+                    )}
+
+                    {order.paymentStatus === 'pending' && (
+                      <View style={styles.upiPendingPill}>
+                        <MaterialCommunityIcons name="clock-outline" size={14} color="#B45309" />
+                        <Text style={styles.upiPendingText}>
+                          {language === 'ta' ? 'வாங்குபவர் செலுத்த காத்திருக்கிறது' : 'Awaiting buyer UPI transfer & UTR'}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                )}
 
                 <View style={styles.divider} />
 
@@ -498,7 +691,7 @@ export default function SellerOrdersScreen() {
                         color="#D97706"
                       />
                       <Text style={styles.awaitingText}>
-                        Waiting for buyer to confirm extra delivery fee (₹{(order as any).extraDeliveryFee || 0})
+                        Waiting for buyer to confirm extra delivery fee (₹{order.extraDeliveryFee})
                       </Text>
                     </View>
                   ) : (
@@ -534,6 +727,7 @@ export default function SellerOrdersScreen() {
                   <View style={styles.acceptRejectRow}>
                     <Pressable
                       style={styles.rejectBtn}
+                      disabled={isBusy}
                       onPress={() => handleRejectOrder(order)}>
                       <MaterialCommunityIcons
                         name="close"
@@ -546,7 +740,8 @@ export default function SellerOrdersScreen() {
                     </Pressable>
 
                     <Pressable
-                      style={styles.acceptBtn}
+                      style={[styles.acceptBtn, isBusy && { opacity: 0.6 }]}
+                      disabled={isBusy}
                       onPress={() => handleAcceptOrder(order)}>
                       <MaterialCommunityIcons
                         name="check-bold"
@@ -560,13 +755,18 @@ export default function SellerOrdersScreen() {
                   </View>
                 ) : nextAction ? (
                   <Pressable
-                    style={[styles.advanceStatusBtn, { backgroundColor: nextAction.color }]}
+                    style={[styles.advanceStatusBtn, { backgroundColor: nextAction.color }, isBusy && { opacity: 0.6 }]}
+                    disabled={isBusy}
                     onPress={() => handleAdvanceStatus(order)}>
-                    <MaterialCommunityIcons
-                      name={nextAction.icon as any}
-                      size={18}
-                      color={colors.white}
-                    />
+                    {isBusy ? (
+                      <ActivityIndicator size="small" color={colors.white} />
+                    ) : (
+                      <MaterialCommunityIcons
+                        name={nextAction.icon as any}
+                        size={18}
+                        color={colors.white}
+                      />
+                    )}
                     <Text style={styles.advanceStatusText}>
                       Update Status: {language === 'ta' ? nextAction.labelTa : nextAction.labelEn}
                     </Text>
@@ -585,9 +785,8 @@ export default function SellerOrdersScreen() {
                 )}
               </Card>
             );
-          })
-        )}
-      </ScrollView>
+        }}
+      />
 
       {/* Modal for Approving Extended-Distance Order */}
       <Modal
@@ -683,6 +882,126 @@ export default function SellerOrdersScreen() {
                 style={[styles.modalSubmitBtn, { backgroundColor: colors.error }]}
                 onPress={handleConfirmRejection}>
                 <Text style={styles.modalSubmitText}>Confirm Reject</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal: verify the buyer's delivery OTP at handover */}
+      <Modal
+        visible={deliveringOrder !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeliveringOrder(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <MaterialCommunityIcons name="shield-key-outline" size={24} color={colors.success} />
+              <Text style={styles.modalTitle}>
+                {language === 'ta' ? 'விநியோக OTP' : 'Confirm Delivery'}
+              </Text>
+            </View>
+            <Text style={styles.modalSubtitle}>
+              {language === 'ta'
+                ? `ஆர்டர் #${deliveringOrder?.id} • வாங்குபவரின் செயலியில் காட்டப்படும் 6 இலக்க OTP-ஐ உள்ளிடவும்.`
+                : `Order #${deliveringOrder?.id} • Ask the buyer for the 6-digit OTP shown in their app.`}
+            </Text>
+            <TextInput
+              style={[styles.textInput, { fontSize: 22, letterSpacing: 8, textAlign: 'center' }]}
+              keyboardType="number-pad"
+              maxLength={6}
+              placeholder="••••••"
+              placeholderTextColor={colors.textMuted}
+              value={deliveryOtpInput}
+              onChangeText={(t) => setDeliveryOtpInput(t.replace(/\D/g, ''))}
+              autoFocus
+            />
+            <View style={styles.modalActions}>
+              <Pressable
+                style={styles.modalCancelBtn}
+                onPress={() => setDeliveringOrder(null)}
+                disabled={busyOrderId !== null}>
+                <Text style={styles.modalCancelText}>{language === 'ta' ? 'ரத்து' : 'Cancel'}</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalSubmitBtn, { backgroundColor: colors.success }]}
+                onPress={handleConfirmDelivery}
+                disabled={busyOrderId !== null}>
+                {busyOrderId !== null ? (
+                  <ActivityIndicator size="small" color={colors.white} />
+                ) : (
+                  <Text style={styles.modalSubmitText}>
+                    {language === 'ta' ? 'உறுதிசெய்' : 'Mark Delivered'}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal for Rejecting Submitted UPI Payment */}
+      <Modal
+        visible={rejectingPaymentOrder !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRejectingPaymentOrder(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <MaterialCommunityIcons name="alert-circle-outline" size={24} color={colors.error} />
+              <Text style={styles.modalTitle}>
+                {language === 'ta' ? 'UPI கட்டணத்தை நிராகரி' : 'Reject UPI Payment'}
+              </Text>
+            </View>
+            <Text style={styles.modalSubtitle}>
+              {language === 'ta'
+                ? `ஆர்டர் #${rejectingPaymentOrder?.id} • சமர்ப்பிக்கப்பட்ட UTR: ${rejectingPaymentOrder?.upiUtr || 'N/A'}`
+                : `Order #${rejectingPaymentOrder?.id} • Submitted UTR: ${rejectingPaymentOrder?.upiUtr || 'N/A'}`}
+            </Text>
+
+            <Text style={styles.inputLabel}>
+              {language === 'ta' ? 'நிராகரிப்புக்கான காரணம் (தேவை)' : 'Rejection Reason (Required)'}
+            </Text>
+            <TextInput
+              style={[styles.textInput, { height: 75 }]}
+              multiline
+              placeholder={
+                language === 'ta'
+                  ? 'எ.கா. வங்கி அறிக்கையில் UTR காணப்படவில்லை, தொகை பொருந்தவில்லை'
+                  : 'e.g. UTR not received in bank account, transaction amount mismatch'
+              }
+              placeholderTextColor={colors.textMuted}
+              value={paymentRejectReason}
+              onChangeText={setPaymentRejectReason}
+            />
+            <Text style={styles.inputHelp}>
+              {language === 'ta'
+                ? 'வாங்குபவர் இந்த காரணத்தைக் கண்டு மீண்டும் 3 முறை வரை சரியான UTR சமர்ப்பிக்கலாம்.'
+                : 'Buyer can view this reason and resubmit a corrected UTR up to 3 times.'}
+            </Text>
+
+            <View style={styles.modalActions}>
+              <Pressable
+                style={styles.modalCancelBtn}
+                onPress={() => setRejectingPaymentOrder(null)}
+                disabled={isProcessingPayment}>
+                <Text style={styles.modalCancelText}>
+                  {language === 'ta' ? 'ரத்து' : 'Cancel'}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modalSubmitBtn, { backgroundColor: colors.error }]}
+                onPress={handleSubmitRejectPayment}
+                disabled={isProcessingPayment}>
+                {isProcessingPayment ? (
+                  <ActivityIndicator size="small" color={colors.white} />
+                ) : (
+                  <Text style={styles.modalSubmitText}>
+                    {language === 'ta' ? 'நிராகரிப்பை உறுதிசெய்' : 'Reject Payment'}
+                  </Text>
+                )}
               </Pressable>
             </View>
           </View>
@@ -1127,5 +1446,123 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.xs + 1,
     fontWeight: '800',
     color: colors.white,
+  },
+  upiCardSection: {
+    marginTop: spacing.xs,
+  },
+  upiSubmittedCard: {
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    borderRadius: 10,
+    padding: spacing.sm,
+    gap: spacing.xs,
+  },
+  upiSubmittedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs + 2,
+  },
+  upiIconBg: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#DBEAFE',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  upiSubmittedTitle: {
+    fontSize: fontSizes.xs + 1,
+    fontWeight: '700',
+    color: '#1E40AF',
+  },
+  upiUtrNumberText: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+    marginTop: 1,
+  },
+  upiUtrBold: {
+    fontWeight: '800',
+    color: colors.text,
+    letterSpacing: 0.5,
+  },
+  upiActionRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  upiRejectBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.error,
+    backgroundColor: '#FEF2F2',
+  },
+  upiRejectBtnText: {
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
+    color: colors.error,
+  },
+  upiConfirmBtn: {
+    flex: 1.5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: colors.primaryDark,
+  },
+  upiConfirmBtnText: {
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
+    color: colors.white,
+  },
+  upiPaidPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#DCFCE7',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  upiPaidText: {
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
+    color: '#166534',
+  },
+  upiRejectedPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  upiRejectedText: {
+    fontSize: fontSizes.xs,
+    fontWeight: '600',
+    color: colors.error,
+  },
+  upiPendingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  upiPendingText: {
+    fontSize: fontSizes.xs,
+    fontWeight: '600',
+    color: '#92400E',
   },
 });

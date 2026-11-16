@@ -10,10 +10,15 @@ import {
   ProductCategory,
   ProductUnit,
   Review,
-  REVIEWS,
   Seller,
-  SELLERS,
 } from '@/data/products';
+
+export interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
 
 export interface ProductFilterParams {
   category?: ProductCategory | 'all' | string;
@@ -24,6 +29,7 @@ export interface ProductFilterParams {
   maxDistanceKm?: number;
   sortBy?: 'price_asc' | 'price_desc' | 'rating' | 'distance' | 'newest';
   limit?: number;
+  offset?: number;
   inStock?: boolean;
   minPrice?: number;
   maxPrice?: number;
@@ -60,8 +66,26 @@ export interface BackendProduct {
   is_active: boolean;
   created_at?: string;
   seller_name?: string;
+  rating?: number | null;
+  review_count?: number;
   distance_km?: number;
   within_free_radius?: boolean;
+}
+
+export function normalizeCategory(cat: string, name?: string): ProductCategory {
+  const c = ((cat || '') + ' ' + (name || '')).toLowerCase().trim();
+  if (c.includes('manure') || c.includes('eruvu') || c.includes('compost') || c.includes('coir')) return 'manure';
+  if (c.includes('fodder') || c.includes('straw') || c.includes('hay') || c.includes('grass') || c.includes('vaikkol') || c.includes('maize')) return 'fodder';
+  if (c.includes('millet') || c.includes('ragi') || c.includes('kezhvaragu') || c.includes('kambu') || c.includes('cholam')) return 'millets';
+  if (c.includes('grain') || c.includes('paddy') || c.includes('rice') || c.includes('nellu') || c.includes('ponni') || c.includes('samba')) return 'grains';
+  if (c.includes('banana') || c.includes('coconut') || c.includes('fruit') || c.includes('mango') || c.includes('guava')) return 'fruits';
+  if (c.includes('vegetable') || c.includes('tomato') || c.includes('onion') || c.includes('brinjal') || c.includes('produce')) return 'vegetables';
+  if (c.includes('spice') || c.includes('turmeric') || c.includes('chili') || c.includes('pepper')) return 'spices';
+  if (c.includes('pulse') || c.includes('dal') || c.includes('moong') || c.includes('urad') || c.includes('chana') || c.includes('payaru')) return 'pulses';
+  if (c.includes('dairy') || c.includes('milk') || c.includes('ghee') || c.includes('butter')) return 'dairy';
+  if (c.includes('seed') || c.includes('vithai')) return 'seeds';
+  if (c.includes('tool') || c.includes('mannvetti') || c.includes('aruval') || c.includes('spade')) return 'tools';
+  return 'grains';
 }
 
 /**
@@ -70,6 +94,7 @@ export interface BackendProduct {
 export function mapBackendProductToApp(item: BackendProduct): Product & {
   distanceKm?: number;
   withinFreeRadius?: boolean;
+  isActive: boolean;
 } {
   // Normalize full image URLs if returned as relative static paths
   const resolvedImages = (item.images || []).map((img) => {
@@ -79,15 +104,12 @@ export function mapBackendProductToApp(item: BackendProduct): Product & {
     return img;
   });
 
-  if (resolvedImages.length === 0) {
-    resolvedImages.push('https://images.unsplash.com/photo-1586201375761-83865001e31c?w=800');
-  }
 
   return {
     id: String(item.id),
     name: item.name,
     nameTamil: item.name_tamil || item.name,
-    category: (item.category.toLowerCase().replace(/\s+/g, '_') as ProductCategory) || 'grains',
+    category: normalizeCategory(item.category, item.name),
     price: item.price,
     unit: (item.unit as ProductUnit) || 'kg',
     stock: item.stock,
@@ -96,12 +118,13 @@ export function mapBackendProductToApp(item: BackendProduct): Product & {
     harvestDate: item.harvest_date || 'Fresh Harvest',
     sellerId: String(item.seller_id),
     sellerName: item.seller_name || 'Tamil Nadu Farmer',
-    village: 'Madurai Region',
-    lat: item.lat ?? 10.0528,
-    lng: item.lng ?? 77.9625,
+    village: '',
+    lat: item.lat ?? Number.NaN,
+    lng: item.lng ?? Number.NaN,
     images: resolvedImages,
-    rating: 4.8,
-    reviewCount: 16,
+    rating: item.rating ?? 0,
+    reviewCount: item.review_count ?? 0,
+    isActive: item.is_active ?? true,
     description:
       item.variety ||
       item.composting_age ||
@@ -116,12 +139,18 @@ export function mapBackendProductToApp(item: BackendProduct): Product & {
 export const productService = {
   /**
    * Retrieves products with filters and buyer lat/lng.
-   * Calls GET /products on FastAPI backend.
+   * Calls GET /products on FastAPI backend with limit/offset pagination.
    */
-  async getProducts(params?: ProductFilterParams): Promise<Product[]> {
+  async getProducts(params?: ProductFilterParams): Promise<PaginatedResult<Product>> {
     try {
       const queryParams: Record<string, any> = {};
 
+      if (params?.limit !== undefined) {
+        queryParams.limit = params.limit;
+      }
+      if (params?.offset !== undefined) {
+        queryParams.offset = params.offset;
+      }
       if (params?.category && params.category !== 'all') {
         queryParams.category = params.category;
       }
@@ -155,15 +184,28 @@ export const productService = {
 
       const res = (await apiClient.get('/products', {
         params: queryParams,
-      })) as BackendProduct[];
+      })) as { items: BackendProduct[]; total: number; limit: number; offset: number } | BackendProduct[];
 
-      if (Array.isArray(res) && res.length > 0) {
-        return res.map(mapBackendProductToApp);
+      if (res && 'items' in res && Array.isArray(res.items)) {
+        return {
+          items: res.items.map(mapBackendProductToApp),
+          total: res.total,
+          limit: res.limit,
+          offset: res.offset,
+        };
       }
-      return [];
+      if (Array.isArray(res)) {
+        return {
+          items: res.map(mapBackendProductToApp),
+          total: res.length,
+          limit: res.length,
+          offset: 0,
+        };
+      }
+      return { items: [], total: 0, limit: params?.limit || 20, offset: params?.offset || 0 };
     } catch (err) {
       console.warn('[productService.getProducts] Failed to fetch from backend, returning empty list:', err);
-      return [];
+      return { items: [], total: 0, limit: params?.limit || 20, offset: params?.offset || 0 };
     }
   },
 
@@ -191,11 +233,29 @@ export const productService = {
   },
 
   /**
-   * Retrieves all products listed by the current seller (Seller only).
+   * Retrieves all products listed by the current seller with limit/offset pagination (Seller only).
    */
-  async getMyProducts(): Promise<Product[]> {
-    const res = (await apiClient.get('/products/mine')) as BackendProduct[];
-    return res.map(mapBackendProductToApp);
+  async getMyProducts(params?: { limit?: number; offset?: number }): Promise<PaginatedResult<Product>> {
+    const res = (await apiClient.get('/products/mine', { params })) as
+      | { items: BackendProduct[]; total: number; limit: number; offset: number }
+      | BackendProduct[];
+    if (res && 'items' in res && Array.isArray(res.items)) {
+      return {
+        items: res.items.map(mapBackendProductToApp),
+        total: res.total,
+        limit: res.limit,
+        offset: res.offset,
+      };
+    }
+    if (Array.isArray(res)) {
+      return {
+        items: res.map(mapBackendProductToApp),
+        total: res.length,
+        limit: res.length,
+        offset: 0,
+      };
+    }
+    return { items: [], total: 0, limit: params?.limit || 20, offset: params?.offset || 0 };
   },
 
   /**
@@ -276,6 +336,8 @@ export const productService = {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+      // Photo uploads over rural mobile data can be slow
+      timeout: 60000,
     })) as { url: string; message: string };
 
     let finalUrl = res.url;
@@ -289,23 +351,46 @@ export const productService = {
    * Retrieves all verified sellers.
    */
   async getSellers(): Promise<Seller[]> {
-    return [...SELLERS];
+    return [];
   },
 
   /**
    * Retrieves seller profile by ID.
    */
   async getSellerById(id: string): Promise<Seller | null> {
-    const seller = SELLERS.find((s) => s.id === id);
-    return seller ?? null;
+    return null;
   },
 
   /**
-   * Retrieves reviews for a product.
+   * Retrieves reviews for a product from backend API.
    */
   async getReviews(productId?: string): Promise<Review[]> {
-    if (!productId) return [...REVIEWS];
-    return REVIEWS.filter((r) => r.productId === productId);
+    if (!productId) return [];
+    try {
+      const res = (await apiClient.get(`/reviews/product/${productId}`)) as {
+        items: {
+          id: number;
+          product_id: number;
+          buyer_name?: string;
+          product_rating: number;
+          created_at: string;
+          text?: string;
+        }[];
+      };
+      if (res && Array.isArray(res.items)) {
+        return res.items.map((r) => ({
+          id: String(r.id),
+          productId: String(r.product_id),
+          buyerName: r.buyer_name || 'Verified Buyer',
+          rating: r.product_rating,
+          date: r.created_at ? r.created_at.split('T')[0] : 'Recent',
+          comment: r.text || '',
+        }));
+      }
+      return [];
+    } catch {
+      return [];
+    }
   },
 
   /**
@@ -330,13 +415,36 @@ export const productService = {
     };
 
     const categories = Object.keys(categoryMeta) as ProductCategory[];
-    return categories.map((catKey) => ({
-      id: catKey,
-      name: categoryMeta[catKey].name,
-      nameTamil: categoryMeta[catKey].nameTamil,
-      icon: categoryMeta[catKey].icon,
-      count: 4,
-    }));
+    try {
+      const res = (await apiClient.get('/products', { params: { limit: 100 } })) as any;
+      const items: BackendProduct[] =
+        res && 'items' in res && Array.isArray(res.items)
+          ? res.items
+          : Array.isArray(res)
+          ? res
+          : [];
+      const counts: Record<string, number> = {};
+      items.forEach((p) => {
+        const cat = normalizeCategory(p.category, p.name);
+        counts[cat] = (counts[cat] || 0) + 1;
+      });
+
+      return categories.map((catKey) => ({
+        id: catKey,
+        name: categoryMeta[catKey].name,
+        nameTamil: categoryMeta[catKey].nameTamil,
+        icon: categoryMeta[catKey].icon,
+        count: counts[catKey] ?? 0,
+      }));
+    } catch {
+      return categories.map((catKey) => ({
+        id: catKey,
+        name: categoryMeta[catKey].name,
+        nameTamil: categoryMeta[catKey].nameTamil,
+        icon: categoryMeta[catKey].icon,
+        count: 2,
+      }));
+    }
   },
 };
 

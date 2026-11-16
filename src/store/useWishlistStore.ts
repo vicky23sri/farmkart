@@ -30,50 +30,6 @@ export interface WishlistItem {
   addedAt?: string;
 }
 
-const INITIAL_WISHLIST: WishlistItem[] = [
-  {
-    productId: 'prod-1',
-    name: 'A2 Cow Dung Manure (Mattu Eruvu)',
-    nameTamil: 'நாட்டு மாட்டு எருவு (இயற்கை உரம்)',
-    category: 'manure',
-    price: 3500,
-    unit: 'tractor load',
-    image: 'https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=600',
-    sellerId: 'seller-1',
-    sellerName: 'Ramasamy Gounder',
-    sellerFarm: 'Vadipatti Iyarkai Pannai',
-    village: 'Vadipatti',
-    lat: 10.0558,
-    lng: 77.9622,
-    rating: 4.9,
-    isOrganic: true,
-    stock: 14,
-    minOrder: 1,
-    vehicleType: 'tractor',
-    addedAt: '2026-10-25T10:30:00Z',
-  },
-  {
-    productId: 'prod-10',
-    name: 'Sevvalai (Red Banana Bunch)',
-    nameTamil: 'நாட்டு செவ்வாழை தார்',
-    category: 'fruits',
-    price: 650,
-    unit: 'bundle',
-    image: 'https://images.unsplash.com/photo-1571771894821-ce9b6c11b08e?w=600',
-    sellerId: 'seller-1',
-    sellerName: 'Ramasamy Gounder',
-    sellerFarm: 'Vadipatti Iyarkai Pannai',
-    village: 'Vadipatti',
-    lat: 10.0558,
-    lng: 77.9622,
-    rating: 4.9,
-    isOrganic: true,
-    stock: 25,
-    minOrder: 1,
-    vehicleType: 'mini_truck',
-    addedAt: '2026-10-26T08:15:00Z',
-  },
-];
 
 export interface WishlistState {
   items: WishlistItem[];
@@ -88,7 +44,7 @@ export interface WishlistState {
 export const useWishlistStore = create<WishlistState>()(
   persist(
     (set, get) => ({
-      items: INITIAL_WISHLIST,
+      items: [],
 
       addToWishlist: (item: WishlistItem) => {
         const exists = get().items.some((i) => i.productId === item.productId);
@@ -129,7 +85,7 @@ export const useWishlistStore = create<WishlistState>()(
       },
     }),
     {
-      name: 'farmkart_wishlist_storage',
+      name: 'farmkart_wishlist_storage_v2',
       storage: createJSONStorage(() => AsyncStorage),
     }
   )

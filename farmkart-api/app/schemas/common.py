@@ -1,5 +1,7 @@
+from typing import Generic, List, Optional, TypeVar, Any
 from pydantic import BaseModel
-from typing import Optional, Any
+
+T = TypeVar("T")
 
 
 class MessageResponse(BaseModel):
@@ -7,3 +9,11 @@ class MessageResponse(BaseModel):
     message: str
     success: bool = True
     data: Optional[Any] = None
+
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    """Standard paginated wrapper for list endpoints."""
+    items: List[T]
+    total: int
+    limit: int
+    offset: int

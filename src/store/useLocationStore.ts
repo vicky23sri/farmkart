@@ -63,6 +63,8 @@ interface LocationState {
   setLocation: (location: BuyerLocation) => void;
   addSavedAddress: (address: BuyerLocation) => void;
   removeSavedAddress: (addressText: string) => void;
+  /** Forget the user's saved addresses and selection (on logout / account deletion). */
+  reset: () => void;
   requestAndFetchCurrentLocation: () => Promise<{
     success: boolean;
     location?: BuyerLocation;
@@ -94,6 +96,13 @@ export const useLocationStore = create<LocationState>()(
         }
         set({ currentLocation: address });
       },
+
+      reset: () =>
+        set({
+          currentLocation: PRESET_LOCATIONS[0],
+          savedAddresses: PRESET_LOCATIONS,
+          locationError: null,
+        }),
 
       removeSavedAddress: (addressText) => {
         set((state) => ({

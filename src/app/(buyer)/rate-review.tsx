@@ -32,7 +32,10 @@ import {
 
 import { AppHeader } from '@/components/AppHeader';
 import { Card } from '@/components/Card';
-import { useCartStore, useLanguageStore, useOrderStore } from '@/store';
+import { useOrder } from '@/services/orderService';
+import { productService } from '@/services/productService';
+import { reviewService } from '@/services/reviewService';
+import { useCartStore, useLanguageStore } from '@/store';
 import { colors, fontSizes, spacing } from '@/theme';
 
 const QUICK_TAGS = [
@@ -49,24 +52,17 @@ const QUICK_TAGS = [
 export default function RateReviewScreen() {
   const { language } = useLanguageStore();
   const { getTotalCount } = useCartStore();
-  const { orders, submitReview } = useOrderStore();
   const params = useLocalSearchParams<{ orderId?: string }>();
-
-  // Locate matching order
-  const order = orders.find(
-    (o) => o.id.toLowerCase() === (params.orderId || '').toLowerCase()
-  ) || orders.find((o) => o.status === 'delivered') || orders[0];
+  const { data: order } = useOrder(params.orderId, false);
 
   const firstItem = order?.items[0];
 
-  // Review states (pre-populate if already reviewed)
-  const existingReview = order?.review;
-  const [productRating, setProductRating] = useState<number>(existingReview?.productRating || 5);
-  const [farmerRating, setFarmerRating] = useState<number>(existingReview?.farmerRating || 5);
-  const [deliveryRating, setDeliveryRating] = useState<number>(existingReview?.deliveryRating || 5);
-  const [selectedTags, setSelectedTags] = useState<string[]>(existingReview?.tags || ['fresh', 'packaging', 'ontime']);
-  const [comment, setComment] = useState<string>(existingReview?.comment || '');
-  const [photos, setPhotos] = useState<string[]>(existingReview?.photos || []);
+  const [productRating, setProductRating] = useState<number>(5);
+  const [farmerRating, setFarmerRating] = useState<number>(5);
+  const [deliveryRating, setDeliveryRating] = useState<number>(5);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [comment, setComment] = useState<string>('');
+  const [photos, setPhotos] = useState<string[]>([]);
   const [isPhotoPickerOpen, setIsPhotoPickerOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
@@ -162,7 +158,7 @@ export default function RateReviewScreen() {
   };
 
   // Submit Review
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (productRating === 0) {
       Alert.alert(
         language === 'ta' ? 'மதிப்பீடு தேவை' : 'Rating Required',
@@ -178,20 +174,59 @@ export default function RateReviewScreen() {
       return;
     }
 
+    if (order.status !== 'delivered') {
+      Alert.alert('Not yet delivered', 'You can review an order after it has been delivered.');
+      return;
+    }
+
     setIsSubmitting(true);
-    setTimeout(() => {
-      submitReview(order.id, {
-        productRating,
-        farmerRating,
-        deliveryRating,
-        comment: comment.trim(),
-        photos,
-        tags: selectedTags,
-        date: new Date().toISOString(),
-      });
-      setIsSubmitting(false);
+    try {
+      // Upload local photos first; the API only accepts URLs it issued
+      const photoUrls: string[] = [];
+      for (const uri of photos.slice(0, 5)) {
+        photoUrls.push(uri.startsWith('http') ? uri : await productService.uploadImage({ uri }));
+      }
+      const tags = selectedTags
+        .map((id) => QUICK_TAGS.find((t) => t.id === id)?.labelEn.replace(/[^\p{L}\p{N}\s]/gu, '').trim())
+        .filter((t): t is string => Boolean(t));
+
+      let created = 0;
+      let alreadyReviewed = 0;
+      for (const item of order.items) {
+        const productId = Number.parseInt(item.id, 10);
+        if (!Number.isInteger(productId)) continue;
+        try {
+          await reviewService.createReview({
+            order_id: Number(order.id),
+            product_id: productId,
+            product_rating: productRating,
+            farmer_rating: farmerRating || productRating,
+            delivery_rating: deliveryRating || productRating,
+            text: comment.trim() || undefined,
+            photos: photoUrls,
+            tags,
+          });
+          created += 1;
+        } catch (err: any) {
+          if (String(err?.message || '').toLowerCase().includes('already submitted')) {
+            alreadyReviewed += 1;
+          } else {
+            throw err;
+          }
+        }
+      }
+
+      if (created === 0 && alreadyReviewed > 0) {
+        Alert.alert('Already reviewed', 'You have already reviewed this order. Thank you!');
+        router.back();
+        return;
+      }
       setShowSuccessModal(true);
-    }, 400);
+    } catch (err: any) {
+      Alert.alert('Could not submit review', err?.message || 'Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -238,7 +273,7 @@ export default function RateReviewScreen() {
                     color={colors.primary}
                   />
                   <Text style={styles.farmerSubText}>
-                    {order.sellerName} • {order.sellerFarm}
+                    {order.sellerName}
                   </Text>
                 </View>
               </View>
